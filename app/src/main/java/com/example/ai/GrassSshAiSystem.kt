@@ -9,6 +9,7 @@ import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.ai
 import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.Schema
+import com.google.firebase.ai.type.ThinkingLevel
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
 import com.google.firebase.ai.type.thinkingConfig
@@ -20,8 +21,8 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 
 private const val TAG = "GrassSshAiSystem"
-private const val PRIMARY_MODEL = "gemini-2.5-flash"
-private const val FALLBACK_MODEL = "gemini-2.5-flash-lite"
+private const val PRIMARY_MODEL = "gemini-3.8-flash"
+private const val FALLBACK_MODEL = "gemini-3.5-flash-lite"
 private const val MODEL_REQUEST_TIMEOUT_MS = 120_000L
 private const val MAX_TERMINAL_CONTEXT_LINES = 50
 
@@ -110,7 +111,7 @@ class GrassSshAiRepository(
       generationConfig = generationConfig {
         temperature = 0.3f
         thinkingConfig = thinkingConfig {
-          thinkingBudget = 0
+          thinkingLevel = ThinkingLevel.LOW
         }
       },
       requestOptions = defaultRequestOptions,
@@ -170,7 +171,7 @@ class GrassSshAiRepository(
         responseMimeType = "application/json"
         responseSchema = buildPlanSchema
         thinkingConfig = thinkingConfig {
-          thinkingBudget = 0
+          thinkingLevel = ThinkingLevel.LOW
         }
       },
       requestOptions = defaultRequestOptions,
@@ -232,7 +233,7 @@ class GrassSshAiRepository(
         responseMimeType = "application/json"
         responseSchema = consoleFixSchema
         thinkingConfig = thinkingConfig {
-          thinkingBudget = 0
+          thinkingLevel = ThinkingLevel.LOW
         }
       },
       requestOptions = defaultRequestOptions,
