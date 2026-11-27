@@ -24,7 +24,9 @@ import org.json.JSONObject
 import kotlin.coroutines.resume
 
 private const val TAG = "GrassSshAiSystem"
-private const val MODEL_REQUEST_TIMEOUT_MS = 40_000L
+private const val PRIMARY_MODEL = "gemini-3.8-flash"
+private const val FALLBACK_MODEL = "gemini-3.5-flash-lite"
+private const val MODEL_REQUEST_TIMEOUT_MS = 35_000L
 
 data class AiChatMessage(
   val id: String,
@@ -87,30 +89,36 @@ class GrassSshAiRepository(
 
   private val defaultRequestOptions = RequestOptions(timeoutInMillis = MODEL_REQUEST_TIMEOUT_MS)
 
-  private val chatModel by lazy {
+  private val chatSystemInstruction by lazy {
+    content {
+      text(
+        """
+        You are GrassSSH AI System, a senior Linux, SSH, DevOps, and Site Reliability Engineering assistant built into the GrassSSH Android terminal client.
+        - Always identify yourself as GrassSSH AI System when asked your name or role.
+        - When terminal output or an error is attached:
+          1. Pinpoint the exact root cause concisely first.
+          2. Provide idempotent, production-safe fix commands inside fenced ```bash blocks so the user can run them with one tap.
+          3. Include a quick verification command to confirm the fix worked.
+        - Never suggest interactive editors (nano, vim, vi) or interactive prompts; always use non-interactive flags (-y, --noconfirm) and heredocs (cat <<'EOF').
+        - Respect the connected SSH user: if user is root, avoid redundant sudo; if non-root, use sudo only where required.
+        - Warn explicitly before destructive commands (rm -rf, mkfs, reboot, firewall flush).
+        """.trimIndent()
+      )
+    }
+  }
+
+  private fun createChatModel(modelName: String) =
     Firebase.ai.generativeModel(
-      modelName = "gemini-3.8-flash",
+      modelName = modelName,
       generationConfig = generationConfig {
         temperature = 0.3f
       },
       requestOptions = defaultRequestOptions,
-      systemInstruction = content {
-        text(
-          """
-          You are GrassSSH AI System, a senior Linux, SSH, DevOps, and Site Reliability Engineering assistant built into the GrassSSH Android terminal client.
-          - Always identify yourself as GrassSSH AI System when asked your name or role.
-          - When terminal output or an error is attached:
-            1. Pinpoint the exact root cause concisely first.
-            2. Provide idempotent, production-safe fix commands inside fenced ```bash blocks so the user can run them with one tap.
-            3. Include a quick verification command to confirm the fix worked.
-          - Never suggest interactive editors (nano, vim, vi) or interactive prompts; always use non-interactive flags (-y, --noconfirm) and heredocs (cat <<'EOF').
-          - Respect the connected SSH user: if user is root, avoid redundant sudo; if non-root, use sudo only where required.
-          - Warn explicitly before destructive commands (rm -rf, mkfs, reboot, firewall flush).
-          """.trimIndent()
-        )
-      },
+      systemInstruction = chatSystemInstruction,
     )
-  }
+
+  private val chatModel by lazy { createChatModel(PRIMARY_MODEL) }
+  private val chatFallbackModel by lazy { createChatModel(FALLBACK_MODEL) }
 
   private val buildPlanSchema by lazy {
     Schema.obj(
@@ -136,32 +144,38 @@ class GrassSshAiRepository(
     )
   }
 
-  private val builderModel by lazy {
+  private val builderSystemInstruction by lazy {
+    content {
+      text(
+        """
+        You are GrassSSH AI System Pro Builder, an expert Linux & DevOps automation architect.
+        Given any user build request, design a complete, production-grade, error-free bash implementation plan that executes cleanly over an SSH PTY via `set -e`.
+        Mandatory engineering standards:
+        1. Idempotency & Dependency Safety: Check for required runtimes/tools first (`command -v node >/dev/null 2>&1 || ...`) and install missing packages cleanly with non-interactive flags (`DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y ...`).
+        2. Zero Stubs / Real Working Code: When writing code, APIs, systemd units, Nginx configs, Dockerfiles, or scripts, write COMPLETE, valid, working contents via `cat <<'EOF' > path` inside `mkdir -p` directories. Never leave TODO placeholders.
+        3. Non-Blocking Background Services: If launching a server/daemon (Node, Python, Uvicorn, Go, etc.), start it cleanly in background (or systemd/nohup with logs redirected to a file + small `sleep 1` + health check) so the SSH shell does NOT hang forever.
+        4. Zero Interactive Prompts: Never use `nano`, `vim`, `less`, or interactive wizards.
+        5. Respect SSH User Context: Omit `sudo` when SSH user is `root`; include `sudo` for privileged system operations when non-root.
+        6. Mandatory Verification: Always provide a concrete `verificationCommand` that proves the app/service/script works without errors.
+        """.trimIndent()
+      )
+    }
+  }
+
+  private fun createBuilderModel(modelName: String) =
     Firebase.ai.generativeModel(
-      modelName = "gemini-3.8-flash",
+      modelName = modelName,
       generationConfig = generationConfig {
         temperature = 0.2f
         responseMimeType = "application/json"
         responseSchema = buildPlanSchema
       },
       requestOptions = defaultRequestOptions,
-      systemInstruction = content {
-        text(
-          """
-          You are GrassSSH AI System Pro Builder, an expert Linux & DevOps automation architect.
-          Given any user build request, design a complete, production-grade, error-free bash implementation plan that executes cleanly over an SSH PTY via `set -e`.
-          Mandatory engineering standards:
-          1. Idempotency & Dependency Safety: Check for required runtimes/tools first (`command -v node >/dev/null 2>&1 || ...`) and install missing packages cleanly with non-interactive flags (`DEBIAN_FRONTEND=noninteractive apt-get update -qq && apt-get install -y ...`).
-          2. Zero Stubs / Real Working Code: When writing code, APIs, systemd units, Nginx configs, Dockerfiles, or scripts, write COMPLETE, valid, working contents via `cat <<'EOF' > path` inside `mkdir -p` directories. Never leave TODO placeholders.
-          3. Non-Blocking Background Services: If launching a server/daemon (Node, Python, Uvicorn, Go, etc.), start it cleanly in background (or systemd/nohup with logs redirected to a file + small `sleep 1` + health check) so the SSH shell does NOT hang forever.
-          4. Zero Interactive Prompts: Never use `nano`, `vim`, `less`, or interactive wizards.
-          5. Respect SSH User Context: Omit `sudo` when SSH user is `root`; include `sudo` for privileged system operations when non-root.
-          6. Mandatory Verification: Always provide a concrete `verificationCommand` that proves the app/service/script works without errors.
-          """.trimIndent()
-        )
-      },
+      systemInstruction = builderSystemInstruction,
     )
-  }
+
+  private val builderModel by lazy { createBuilderModel(PRIMARY_MODEL) }
+  private val builderFallbackModel by lazy { createBuilderModel(FALLBACK_MODEL) }
 
   private val consoleFixSchema by lazy {
     Schema.obj(
@@ -190,37 +204,57 @@ class GrassSshAiRepository(
     )
   }
 
-  private val fixErrorModel by lazy {
+  private val fixErrorSystemInstruction by lazy {
+    content {
+      text(
+        """
+        You are GrassSSH AI System Error Resolver, an elite Linux/SSH/DevOps troubleshooter.
+        Analyze the live console output and diagnose the exact root cause of any failure (missing packages, permission errors, port conflicts EADDRINUSE, broken apt/dpkg locks, Nginx/systemd config errors, Python/Node dependency errors, Docker daemon issues, or SSH errors).
+        Rules for error-free fixes:
+        - Produce minimal, safe, idempotent bash steps that execute cleanly via `set -e` without failing mid-way.
+        - Never guess destructive cleanups like `rm -rf /`; only target exact broken locks/PIDs/configs seen in the log.
+        - For apt locks, verify process state safely before unlocking/reconfiguring (`dpkg --configure -a`).
+        - For port conflicts, inspect/restart the conflicting service cleanly rather than blind kills when possible.
+        - Always provide a `verificationCommand` to confirm the problem is fixed.
+        """.trimIndent()
+      )
+    }
+  }
+
+  private fun createFixErrorModel(modelName: String) =
     Firebase.ai.generativeModel(
-      modelName = "gemini-3.8-flash",
+      modelName = modelName,
       generationConfig = generationConfig {
         temperature = 0.15f
         responseMimeType = "application/json"
         responseSchema = consoleFixSchema
       },
       requestOptions = defaultRequestOptions,
-      systemInstruction = content {
-        text(
-          """
-          You are GrassSSH AI System Error Resolver, an elite Linux/SSH/DevOps troubleshooter.
-          Analyze the live console output and diagnose the exact root cause of any failure (missing packages, permission errors, port conflicts EADDRINUSE, broken apt/dpkg locks, Nginx/systemd config errors, Python/Node dependency errors, Docker daemon issues, or SSH errors).
-          Rules for error-free fixes:
-          - Produce minimal, safe, idempotent bash steps that execute cleanly via `set -e` without failing mid-way.
-          - Never guess destructive cleanups like `rm -rf /`; only target exact broken locks/PIDs/configs seen in the log.
-          - For apt locks, verify process state safely before unlocking/reconfiguring (`dpkg --configure -a`).
-          - For port conflicts, inspect/restart the conflicting service cleanly rather than blind kills when possible.
-          - Always provide a `verificationCommand` to confirm the problem is fixed.
-          """.trimIndent()
-        )
-      },
+      systemInstruction = fixErrorSystemInstruction,
     )
-  }
+
+  private val fixErrorModel by lazy { createFixErrorModel(PRIMARY_MODEL) }
+  private val fixErrorFallbackModel by lazy { createFixErrorModel(FALLBACK_MODEL) }
 
   private fun isNetworkAvailable(): Boolean {
     val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
     val network = cm.activeNetwork ?: return false
     val caps = cm.getNetworkCapabilities(network) ?: return false
     return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+  }
+
+  private fun isTransientHighDemandOrTimeout(error: Throwable): Boolean {
+    if (error is TimeoutCancellationException) return true
+    val msg = error.localizedMessage.orEmpty() + " " + (error.cause?.localizedMessage.orEmpty())
+    val lower = msg.lowercase()
+    return lower.contains("high demand") ||
+      lower.contains("overloaded") ||
+      lower.contains("temporarily") ||
+      lower.contains("try again") ||
+      lower.contains("unavailable") ||
+      lower.contains("resource exhausted") ||
+      lower.contains("503") ||
+      lower.contains("429")
   }
 
   private suspend fun ensureReadyAndProbeAppCheck(): String? {
@@ -331,38 +365,64 @@ class GrassSshAiRepository(
       if (accumulated.isBlank()) {
         throw IllegalStateException("GrassSSH AI System returned an empty response.")
       }
-    } catch (e: TimeoutCancellationException) {
+    } catch (e: CancellationException) {
+      if (e !is TimeoutCancellationException) throw e
       if (accumulated.isNotBlank()) {
         Log.w(TAG, "Stream ended after partial response; keeping received text.", e)
         return@flow
       }
-      Log.w(TAG, "Streaming produced 0 bytes in 30s; falling back to unary generateContent.", e)
-      try {
-        val fallbackChat = chatModel.startChat(history = chatHistory)
-        val unaryResponse = withTimeout(30_000L) {
-          fallbackChat.sendMessage(fullPrompt)
-        }
-        val unaryText = unaryResponse.text?.takeIf { it.isNotBlank() }
-          ?: throw IllegalStateException("GrassSSH AI System returned an empty response.")
-        emit(unaryText)
-      } catch (fallbackTimeout: TimeoutCancellationException) {
-        Log.e(TAG, "GrassSSH AI System unary fallback timed out", fallbackTimeout)
-        val detail = appCheckHint ?: "Check internet / Play Services connectivity"
-        throw IllegalStateException(
-          "GrassSSH AI System timed out after 60 seconds ($detail). Please retry.",
-          fallbackTimeout,
-        )
-      } catch (cancel: CancellationException) {
-        throw cancel
-      } catch (fallbackErr: Exception) {
-        Log.e(TAG, "GrassSSH AI System unary fallback failed", fallbackErr)
-        throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", fallbackErr, appCheckHint), fallbackErr)
-      }
-    } catch (e: CancellationException) {
-      throw e
+      Log.w(TAG, "Primary stream timed out at 30s; falling back to $FALLBACK_MODEL.", e)
+      runFallbackStreamOrUnary(chatHistory, fullPrompt, appCheckHint, emitChunk = { emit(it) })
     } catch (e: Exception) {
-      Log.e(TAG, "GrassSSH AI System inference failed", e)
-      throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", e, appCheckHint), e)
+      if (accumulated.isBlank() && isTransientHighDemandOrTimeout(e)) {
+        Log.w(TAG, "Primary model hit transient/high-demand error; falling back to $FALLBACK_MODEL.", e)
+        runFallbackStreamOrUnary(chatHistory, fullPrompt, appCheckHint, emitChunk = { emit(it) })
+      } else {
+        Log.e(TAG, "GrassSSH AI System inference failed", e)
+        throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", e, appCheckHint), e)
+      }
+    }
+  }
+
+  private suspend fun runFallbackStreamOrUnary(
+    chatHistory: List<com.google.firebase.ai.type.Content>,
+    fullPrompt: String,
+    appCheckHint: String?,
+    emitChunk: suspend (String) -> Unit,
+  ) {
+    val fallbackAccumulated = StringBuilder()
+    try {
+      val fallbackChat = chatFallbackModel.startChat(history = chatHistory)
+      withTimeout(30_000L) {
+        fallbackChat.sendMessageStream(fullPrompt).collect { chunk ->
+          val piece = chunk.text.orEmpty()
+          if (piece.isNotEmpty()) {
+            fallbackAccumulated.append(piece)
+            emitChunk(fallbackAccumulated.toString())
+          }
+        }
+      }
+      if (fallbackAccumulated.isBlank()) {
+        val unary = withTimeout(25_000L) {
+          chatFallbackModel.startChat(history = chatHistory).sendMessage(fullPrompt)
+        }
+        val unaryText = unary.text?.takeIf { it.isNotBlank() }
+          ?: throw IllegalStateException("GrassSSH AI System returned an empty response.")
+        emitChunk(unaryText)
+      }
+    } catch (fallbackTimeout: TimeoutCancellationException) {
+      if (fallbackAccumulated.isNotBlank()) return
+      Log.e(TAG, "Fallback model timed out", fallbackTimeout)
+      val detail = appCheckHint ?: "Check internet / Play Services connectivity"
+      throw IllegalStateException(
+        "GrassSSH AI System timed out ($detail). Please retry.",
+        fallbackTimeout,
+      )
+    } catch (cancel: CancellationException) {
+      throw cancel
+    } catch (fallbackErr: Exception) {
+      Log.e(TAG, "Fallback model failed", fallbackErr)
+      throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", fallbackErr, appCheckHint), fallbackErr)
     }
   }
 
@@ -389,20 +449,43 @@ class GrassSshAiRepository(
     }
 
     try {
-      val response = withTimeout(55_000L) {
+      val response = withTimeout(45_000L) {
         builderModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("GrassSSH AI System returned an empty build plan.")
       return parseBuildPlanJson(jsonText)
+    } catch (e: CancellationException) {
+      if (e !is TimeoutCancellationException) throw e
+      Log.w(TAG, "Primary builder timed out; trying $FALLBACK_MODEL", e)
+      return generateBuildPlanFallback(composedPrompt, appCheckHint)
+    } catch (e: Exception) {
+      if (isTransientHighDemandOrTimeout(e)) {
+        Log.w(TAG, "Primary builder hit transient/high-demand error; trying $FALLBACK_MODEL", e)
+        return generateBuildPlanFallback(composedPrompt, appCheckHint)
+      }
+      Log.e(TAG, "GrassSSH AI System build plan failed", e)
+      throw IllegalStateException(formatFailureMessage("Build plan failed", e, appCheckHint), e)
+    }
+  }
+
+  private suspend fun generateBuildPlanFallback(
+    composedPrompt: String,
+    appCheckHint: String?,
+  ): GeneratedBuildPlan {
+    try {
+      val response = withTimeout(40_000L) {
+        builderFallbackModel.generateContent(composedPrompt)
+      }
+      val jsonText = response.text?.takeIf { it.isNotBlank() }
+        ?: throw IllegalStateException("GrassSSH AI System returned an empty build plan.")
+      return parseBuildPlanJson(jsonText)
     } catch (e: TimeoutCancellationException) {
-      Log.e(TAG, "GrassSSH AI System build plan timed out", e)
       val detail = appCheckHint ?: "Check internet / Play Services connectivity"
       throw IllegalStateException("Build generation timed out ($detail). Please retry.", e)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      Log.e(TAG, "GrassSSH AI System build plan failed", e)
       throw IllegalStateException(formatFailureMessage("Build plan failed", e, appCheckHint), e)
     }
   }
@@ -430,20 +513,43 @@ class GrassSshAiRepository(
     }
 
     try {
-      val response = withTimeout(55_000L) {
+      val response = withTimeout(45_000L) {
         fixErrorModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("GrassSSH AI System returned an empty fix plan.")
       return parseConsoleFixJson(jsonText)
+    } catch (e: CancellationException) {
+      if (e !is TimeoutCancellationException) throw e
+      Log.w(TAG, "Primary fix model timed out; trying $FALLBACK_MODEL", e)
+      return diagnoseConsoleErrorFallback(composedPrompt, appCheckHint)
+    } catch (e: Exception) {
+      if (isTransientHighDemandOrTimeout(e)) {
+        Log.w(TAG, "Primary fix model hit transient/high-demand error; trying $FALLBACK_MODEL", e)
+        return diagnoseConsoleErrorFallback(composedPrompt, appCheckHint)
+      }
+      Log.e(TAG, "GrassSSH AI System console fix failed", e)
+      throw IllegalStateException(formatFailureMessage("Console fix failed", e, appCheckHint), e)
+    }
+  }
+
+  private suspend fun diagnoseConsoleErrorFallback(
+    composedPrompt: String,
+    appCheckHint: String?,
+  ): ConsoleFixPlan {
+    try {
+      val response = withTimeout(40_000L) {
+        fixErrorFallbackModel.generateContent(composedPrompt)
+      }
+      val jsonText = response.text?.takeIf { it.isNotBlank() }
+        ?: throw IllegalStateException("GrassSSH AI System returned an empty fix plan.")
+      return parseConsoleFixJson(jsonText)
     } catch (e: TimeoutCancellationException) {
-      Log.e(TAG, "GrassSSH AI System console fix timed out", e)
       val detail = appCheckHint ?: "Check internet / Play Services connectivity"
       throw IllegalStateException("Error diagnosis timed out ($detail). Please retry.", e)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      Log.e(TAG, "GrassSSH AI System console fix failed", e)
       throw IllegalStateException(formatFailureMessage("Console fix failed", e, appCheckHint), e)
     }
   }
