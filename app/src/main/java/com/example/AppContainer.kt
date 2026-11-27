@@ -21,5 +21,5 @@ class AppContainer(context: Context) {
 
   val sessionManager: SshSessionManager = SshSessionManager(sshRepository)
 
-  val aiRepository: GrassSshAiRepository = GrassSshAiRepository()
+  val aiRepository: GrassSshAiRepository = GrassSshAiRepository(context.applicationContext)
 }

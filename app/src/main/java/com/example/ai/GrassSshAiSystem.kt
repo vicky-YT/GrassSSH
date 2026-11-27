@@ -1,19 +1,30 @@
 package com.example.ai
 
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.Log
+import com.example.firebase.AppCheckDiagnostics
 import com.google.firebase.Firebase
+import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
+import com.google.firebase.appcheck.FirebaseAppCheck
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
+import kotlin.coroutines.resume
 
 private const val TAG = "GrassSshAiSystem"
+private const val MODEL_REQUEST_TIMEOUT_MS = 40_000L
 
 data class AiChatMessage(
   val id: String,
@@ -70,7 +81,11 @@ sealed interface ConsoleFixUiState {
   data class Error(val message: String) : ConsoleFixUiState
 }
 
-class GrassSshAiRepository {
+class GrassSshAiRepository(
+  private val appContext: Context,
+) {
+
+  private val defaultRequestOptions = RequestOptions(timeoutInMillis = MODEL_REQUEST_TIMEOUT_MS)
 
   private val chatModel by lazy {
     Firebase.ai.generativeModel(
@@ -78,6 +93,7 @@ class GrassSshAiRepository {
       generationConfig = generationConfig {
         temperature = 0.3f
       },
+      requestOptions = defaultRequestOptions,
       systemInstruction = content {
         text(
           """
@@ -128,6 +144,7 @@ class GrassSshAiRepository {
         responseMimeType = "application/json"
         responseSchema = buildPlanSchema
       },
+      requestOptions = defaultRequestOptions,
       systemInstruction = content {
         text(
           """
@@ -181,6 +198,7 @@ class GrassSshAiRepository {
         responseMimeType = "application/json"
         responseSchema = consoleFixSchema
       },
+      requestOptions = defaultRequestOptions,
       systemInstruction = content {
         text(
           """
@@ -198,12 +216,81 @@ class GrassSshAiRepository {
     )
   }
 
+  private fun isNetworkAvailable(): Boolean {
+    val cm = appContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager ?: return true
+    val network = cm.activeNetwork ?: return false
+    val caps = cm.getNetworkCapabilities(network) ?: return false
+    return caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+  }
+
+  private suspend fun ensureReadyAndProbeAppCheck(): String? {
+    if (FirebaseApp.getApps(appContext).isEmpty()) {
+      runCatching { FirebaseApp.initializeApp(appContext) }
+    }
+    if (FirebaseApp.getApps(appContext).isEmpty()) {
+      throw IllegalStateException(
+        "Firebase is not initialized in this APK (google-services config missing or invalid). Rebuild via GitHub Actions with app/google-services.json present.",
+      )
+    }
+    if (!isNetworkAvailable()) {
+      throw IllegalStateException("No internet connection detected. Connect to Wi-Fi or mobile data and retry.")
+    }
+
+    val initErr = AppCheckDiagnostics.initError
+    if (!initErr.isNullOrBlank()) {
+      return "AppCheck init issue (${AppCheckDiagnostics.providerMode}): $initErr"
+    }
+
+    return withTimeoutOrNull(6_000L) {
+      suspendCancellableCoroutine { cont ->
+        try {
+          FirebaseAppCheck.getInstance().getAppCheckToken(false)
+            .addOnSuccessListener { result ->
+              if (cont.isActive) {
+                if (result.token.isBlank()) {
+                  cont.resume("AppCheck returned empty token (${AppCheckDiagnostics.providerMode})")
+                } else {
+                  cont.resume(null)
+                }
+              }
+            }
+            .addOnFailureListener { err ->
+              Log.w(TAG, "AppCheck token probe failed (${AppCheckDiagnostics.providerMode})", err)
+              if (cont.isActive) {
+                cont.resume("AppCheck (${AppCheckDiagnostics.providerMode}): ${err.localizedMessage ?: err::class.java.simpleName}")
+              }
+            }
+        } catch (e: Exception) {
+          if (cont.isActive) {
+            cont.resume("AppCheck (${AppCheckDiagnostics.providerMode}): ${e.localizedMessage ?: e::class.java.simpleName}")
+          }
+        }
+      }
+    } ?: "AppCheck token probe timed out (${AppCheckDiagnostics.providerMode})"
+  }
+
+  private fun formatFailureMessage(prefix: String, error: Throwable, appCheckHint: String?): String {
+    val raw = error.localizedMessage?.takeIf { it.isNotBlank() } ?: error::class.java.simpleName
+    return buildString {
+      append(prefix)
+      append(": ")
+      append(raw)
+      if (!appCheckHint.isNullOrBlank() && !raw.contains("AppCheck", ignoreCase = true)) {
+        append(" [")
+        append(appCheckHint)
+        append("]")
+      }
+    }
+  }
+
   fun streamResponse(
     history: List<AiChatMessage>,
     userPrompt: String,
     terminalContext: String?,
     customInstructions: String = "",
   ): Flow<String> = flow {
+    val appCheckHint = ensureReadyAndProbeAppCheck()
+
     val chatHistory = history
       .filter { it.text.isNotBlank() && !it.isStreaming }
       .takeLast(10)
@@ -232,7 +319,7 @@ class GrassSshAiRepository {
     val accumulated = StringBuilder()
 
     try {
-      withTimeout(60_000L) {
+      withTimeout(30_000L) {
         chat.sendMessageStream(fullPrompt).collect { chunk ->
           val piece = chunk.text.orEmpty()
           if (piece.isNotEmpty()) {
@@ -245,13 +332,37 @@ class GrassSshAiRepository {
         throw IllegalStateException("GrassSSH AI System returned an empty response.")
       }
     } catch (e: TimeoutCancellationException) {
-      Log.e(TAG, "GrassSSH AI System request timed out", e)
-      throw IllegalStateException("GrassSSH AI System timed out after 60 seconds. Please retry.", e)
+      if (accumulated.isNotBlank()) {
+        Log.w(TAG, "Stream ended after partial response; keeping received text.", e)
+        return@flow
+      }
+      Log.w(TAG, "Streaming produced 0 bytes in 30s; falling back to unary generateContent.", e)
+      try {
+        val fallbackChat = chatModel.startChat(history = chatHistory)
+        val unaryResponse = withTimeout(30_000L) {
+          fallbackChat.sendMessage(fullPrompt)
+        }
+        val unaryText = unaryResponse.text?.takeIf { it.isNotBlank() }
+          ?: throw IllegalStateException("GrassSSH AI System returned an empty response.")
+        emit(unaryText)
+      } catch (fallbackTimeout: TimeoutCancellationException) {
+        Log.e(TAG, "GrassSSH AI System unary fallback timed out", fallbackTimeout)
+        val detail = appCheckHint ?: "Check internet / Play Services connectivity"
+        throw IllegalStateException(
+          "GrassSSH AI System timed out after 60 seconds ($detail). Please retry.",
+          fallbackTimeout,
+        )
+      } catch (cancel: CancellationException) {
+        throw cancel
+      } catch (fallbackErr: Exception) {
+        Log.e(TAG, "GrassSSH AI System unary fallback failed", fallbackErr)
+        throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", fallbackErr, appCheckHint), fallbackErr)
+      }
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       Log.e(TAG, "GrassSSH AI System inference failed", e)
-      throw e
+      throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", e, appCheckHint), e)
     }
   }
 
@@ -261,6 +372,8 @@ class GrassSshAiRepository {
     terminalContext: String? = null,
     sshUsername: String? = null,
   ): GeneratedBuildPlan {
+    val appCheckHint = ensureReadyAndProbeAppCheck()
+
     val composedPrompt = buildString {
       if (!sshUsername.isNullOrBlank()) {
         appendLine("Connected SSH User: $sshUsername (${if (sshUsername == "root") "root privileges, omit sudo" else "non-root user, use sudo when privileged"})")
@@ -276,7 +389,7 @@ class GrassSshAiRepository {
     }
 
     try {
-      val response = withTimeout(60_000L) {
+      val response = withTimeout(55_000L) {
         builderModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
@@ -284,12 +397,13 @@ class GrassSshAiRepository {
       return parseBuildPlanJson(jsonText)
     } catch (e: TimeoutCancellationException) {
       Log.e(TAG, "GrassSSH AI System build plan timed out", e)
-      throw IllegalStateException("Build generation timed out after 60 seconds. Please retry.", e)
+      val detail = appCheckHint ?: "Check internet / Play Services connectivity"
+      throw IllegalStateException("Build generation timed out ($detail). Please retry.", e)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       Log.e(TAG, "GrassSSH AI System build plan failed", e)
-      throw e
+      throw IllegalStateException(formatFailureMessage("Build plan failed", e, appCheckHint), e)
     }
   }
 
@@ -299,6 +413,8 @@ class GrassSshAiRepository {
     customInstructions: String = "",
     sshUsername: String? = null,
   ): ConsoleFixPlan {
+    val appCheckHint = ensureReadyAndProbeAppCheck()
+
     val composedPrompt = buildString {
       if (!sshUsername.isNullOrBlank()) {
         appendLine("Connected SSH User: $sshUsername (${if (sshUsername == "root") "root privileges, omit sudo" else "non-root user, use sudo when privileged"})")
@@ -314,7 +430,7 @@ class GrassSshAiRepository {
     }
 
     try {
-      val response = withTimeout(60_000L) {
+      val response = withTimeout(55_000L) {
         fixErrorModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
@@ -322,12 +438,13 @@ class GrassSshAiRepository {
       return parseConsoleFixJson(jsonText)
     } catch (e: TimeoutCancellationException) {
       Log.e(TAG, "GrassSSH AI System console fix timed out", e)
-      throw IllegalStateException("Error diagnosis timed out after 60 seconds. Please retry.", e)
+      val detail = appCheckHint ?: "Check internet / Play Services connectivity"
+      throw IllegalStateException("Error diagnosis timed out ($detail). Please retry.", e)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
       Log.e(TAG, "GrassSSH AI System console fix failed", e)
-      throw e
+      throw IllegalStateException(formatFailureMessage("Console fix failed", e, appCheckHint), e)
     }
   }
 
