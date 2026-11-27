@@ -79,7 +79,6 @@ android {
 secrets {
     propertiesFileName = ".env"
     defaultPropertiesFileName = ".env.example"
-    ignoreList.add("FIREBASE_APPCHECK_DEBUG_TOKEN")
 }
 
 // Firebase configuration: missing file will now fail the build
@@ -107,8 +106,6 @@ dependencies {
     implementation(libs.androidx.room.runtime)
 
     implementation(libs.firebase.ai)
-    implementation(libs.firebase.appcheck.recaptcha)
-    implementation(libs.firebase.appcheck.debug)
 
     implementation(libs.jsch)
     implementation(libs.kotlinx.coroutines.android)

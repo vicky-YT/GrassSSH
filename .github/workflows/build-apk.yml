@@ -68,7 +68,6 @@ jobs:
               exit 1
             fi
           fi
-          test -f app/src/main/res/values/firebase_applet_config.xml
 
       - name: Build Signed Release APK
         env:

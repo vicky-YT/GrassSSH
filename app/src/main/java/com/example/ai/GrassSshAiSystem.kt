@@ -4,7 +4,6 @@ import android.content.Context
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
-import com.example.firebase.AppCheckDiagnostics
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.ai
@@ -12,16 +11,12 @@ import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
-import com.google.firebase.appcheck.FirebaseAppCheck
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.flow
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
-import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
-import kotlin.coroutines.resume
 
 private const val TAG = "GrassSshAiSystem"
 private const val PRIMARY_MODEL = "gemini-3.8-flash"
@@ -257,7 +252,7 @@ class GrassSshAiRepository(
       lower.contains("429")
   }
 
-  private suspend fun ensureReadyAndProbeAppCheck(): String? {
+  private fun ensureReady() {
     if (FirebaseApp.getApps(appContext).isEmpty()) {
       runCatching { FirebaseApp.initializeApp(appContext) }
     }
@@ -269,52 +264,11 @@ class GrassSshAiRepository(
     if (!isNetworkAvailable()) {
       throw IllegalStateException("No internet connection detected. Connect to Wi-Fi or mobile data and retry.")
     }
-
-    val initErr = AppCheckDiagnostics.initError
-    if (!initErr.isNullOrBlank()) {
-      return "AppCheck init issue (${AppCheckDiagnostics.providerMode}): $initErr"
-    }
-
-    return withTimeoutOrNull(6_000L) {
-      suspendCancellableCoroutine { cont ->
-        try {
-          FirebaseAppCheck.getInstance().getAppCheckToken(false)
-            .addOnSuccessListener { result ->
-              if (cont.isActive) {
-                if (result.token.isBlank()) {
-                  cont.resume("AppCheck returned empty token (${AppCheckDiagnostics.providerMode})")
-                } else {
-                  cont.resume(null)
-                }
-              }
-            }
-            .addOnFailureListener { err ->
-              Log.w(TAG, "AppCheck token probe failed (${AppCheckDiagnostics.providerMode})", err)
-              if (cont.isActive) {
-                cont.resume("AppCheck (${AppCheckDiagnostics.providerMode}): ${err.localizedMessage ?: err::class.java.simpleName}")
-              }
-            }
-        } catch (e: Exception) {
-          if (cont.isActive) {
-            cont.resume("AppCheck (${AppCheckDiagnostics.providerMode}): ${e.localizedMessage ?: e::class.java.simpleName}")
-          }
-        }
-      }
-    } ?: "AppCheck token probe timed out (${AppCheckDiagnostics.providerMode})"
   }
 
-  private fun formatFailureMessage(prefix: String, error: Throwable, appCheckHint: String?): String {
+  private fun formatFailureMessage(prefix: String, error: Throwable): String {
     val raw = error.localizedMessage?.takeIf { it.isNotBlank() } ?: error::class.java.simpleName
-    return buildString {
-      append(prefix)
-      append(": ")
-      append(raw)
-      if (!appCheckHint.isNullOrBlank() && !raw.contains("AppCheck", ignoreCase = true)) {
-        append(" [")
-        append(appCheckHint)
-        append("]")
-      }
-    }
+    return "$prefix: $raw"
   }
 
   fun streamResponse(
@@ -323,7 +277,7 @@ class GrassSshAiRepository(
     terminalContext: String?,
     customInstructions: String = "",
   ): Flow<String> = flow {
-    val appCheckHint = ensureReadyAndProbeAppCheck()
+    ensureReady()
 
     val chatHistory = history
       .filter { it.text.isNotBlank() && !it.isStreaming }
@@ -372,14 +326,14 @@ class GrassSshAiRepository(
         return@flow
       }
       Log.w(TAG, "Primary stream timed out at 30s; falling back to $FALLBACK_MODEL.", e)
-      runFallbackStreamOrUnary(chatHistory, fullPrompt, appCheckHint, emitChunk = { emit(it) })
+      runFallbackStreamOrUnary(chatHistory, fullPrompt, emitChunk = { emit(it) })
     } catch (e: Exception) {
       if (accumulated.isBlank() && isTransientHighDemandOrTimeout(e)) {
         Log.w(TAG, "Primary model hit transient/high-demand error; falling back to $FALLBACK_MODEL.", e)
-        runFallbackStreamOrUnary(chatHistory, fullPrompt, appCheckHint, emitChunk = { emit(it) })
+        runFallbackStreamOrUnary(chatHistory, fullPrompt, emitChunk = { emit(it) })
       } else {
         Log.e(TAG, "GrassSSH AI System inference failed", e)
-        throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", e, appCheckHint), e)
+        throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", e), e)
       }
     }
   }
@@ -387,7 +341,6 @@ class GrassSshAiRepository(
   private suspend fun runFallbackStreamOrUnary(
     chatHistory: List<com.google.firebase.ai.type.Content>,
     fullPrompt: String,
-    appCheckHint: String?,
     emitChunk: suspend (String) -> Unit,
   ) {
     val fallbackAccumulated = StringBuilder()
@@ -413,16 +366,15 @@ class GrassSshAiRepository(
     } catch (fallbackTimeout: TimeoutCancellationException) {
       if (fallbackAccumulated.isNotBlank()) return
       Log.e(TAG, "Fallback model timed out", fallbackTimeout)
-      val detail = appCheckHint ?: "Check internet / Play Services connectivity"
       throw IllegalStateException(
-        "GrassSSH AI System timed out ($detail). Please retry.",
+        "GrassSSH AI System timed out. Check internet / Play Services connectivity and retry.",
         fallbackTimeout,
       )
     } catch (cancel: CancellationException) {
       throw cancel
     } catch (fallbackErr: Exception) {
       Log.e(TAG, "Fallback model failed", fallbackErr)
-      throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", fallbackErr, appCheckHint), fallbackErr)
+      throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", fallbackErr), fallbackErr)
     }
   }
 
@@ -432,7 +384,7 @@ class GrassSshAiRepository(
     terminalContext: String? = null,
     sshUsername: String? = null,
   ): GeneratedBuildPlan {
-    val appCheckHint = ensureReadyAndProbeAppCheck()
+    ensureReady()
 
     val composedPrompt = buildString {
       if (!sshUsername.isNullOrBlank()) {
@@ -458,20 +410,19 @@ class GrassSshAiRepository(
     } catch (e: CancellationException) {
       if (e !is TimeoutCancellationException) throw e
       Log.w(TAG, "Primary builder timed out; trying $FALLBACK_MODEL", e)
-      return generateBuildPlanFallback(composedPrompt, appCheckHint)
+      return generateBuildPlanFallback(composedPrompt)
     } catch (e: Exception) {
       if (isTransientHighDemandOrTimeout(e)) {
         Log.w(TAG, "Primary builder hit transient/high-demand error; trying $FALLBACK_MODEL", e)
-        return generateBuildPlanFallback(composedPrompt, appCheckHint)
+        return generateBuildPlanFallback(composedPrompt)
       }
       Log.e(TAG, "GrassSSH AI System build plan failed", e)
-      throw IllegalStateException(formatFailureMessage("Build plan failed", e, appCheckHint), e)
+      throw IllegalStateException(formatFailureMessage("Build plan failed", e), e)
     }
   }
 
   private suspend fun generateBuildPlanFallback(
     composedPrompt: String,
-    appCheckHint: String?,
   ): GeneratedBuildPlan {
     try {
       val response = withTimeout(40_000L) {
@@ -481,12 +432,11 @@ class GrassSshAiRepository(
         ?: throw IllegalStateException("GrassSSH AI System returned an empty build plan.")
       return parseBuildPlanJson(jsonText)
     } catch (e: TimeoutCancellationException) {
-      val detail = appCheckHint ?: "Check internet / Play Services connectivity"
-      throw IllegalStateException("Build generation timed out ($detail). Please retry.", e)
+      throw IllegalStateException("Build generation timed out. Check internet / Play Services connectivity and retry.", e)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      throw IllegalStateException(formatFailureMessage("Build plan failed", e, appCheckHint), e)
+      throw IllegalStateException(formatFailureMessage("Build plan failed", e), e)
     }
   }
 
@@ -496,7 +446,7 @@ class GrassSshAiRepository(
     customInstructions: String = "",
     sshUsername: String? = null,
   ): ConsoleFixPlan {
-    val appCheckHint = ensureReadyAndProbeAppCheck()
+    ensureReady()
 
     val composedPrompt = buildString {
       if (!sshUsername.isNullOrBlank()) {
@@ -522,20 +472,19 @@ class GrassSshAiRepository(
     } catch (e: CancellationException) {
       if (e !is TimeoutCancellationException) throw e
       Log.w(TAG, "Primary fix model timed out; trying $FALLBACK_MODEL", e)
-      return diagnoseConsoleErrorFallback(composedPrompt, appCheckHint)
+      return diagnoseConsoleErrorFallback(composedPrompt)
     } catch (e: Exception) {
       if (isTransientHighDemandOrTimeout(e)) {
         Log.w(TAG, "Primary fix model hit transient/high-demand error; trying $FALLBACK_MODEL", e)
-        return diagnoseConsoleErrorFallback(composedPrompt, appCheckHint)
+        return diagnoseConsoleErrorFallback(composedPrompt)
       }
       Log.e(TAG, "GrassSSH AI System console fix failed", e)
-      throw IllegalStateException(formatFailureMessage("Console fix failed", e, appCheckHint), e)
+      throw IllegalStateException(formatFailureMessage("Console fix failed", e), e)
     }
   }
 
   private suspend fun diagnoseConsoleErrorFallback(
     composedPrompt: String,
-    appCheckHint: String?,
   ): ConsoleFixPlan {
     try {
       val response = withTimeout(40_000L) {
@@ -545,12 +494,11 @@ class GrassSshAiRepository(
         ?: throw IllegalStateException("GrassSSH AI System returned an empty fix plan.")
       return parseConsoleFixJson(jsonText)
     } catch (e: TimeoutCancellationException) {
-      val detail = appCheckHint ?: "Check internet / Play Services connectivity"
-      throw IllegalStateException("Error diagnosis timed out ($detail). Please retry.", e)
+      throw IllegalStateException("Error diagnosis timed out. Check internet / Play Services connectivity and retry.", e)
     } catch (e: CancellationException) {
       throw e
     } catch (e: Exception) {
-      throw IllegalStateException(formatFailureMessage("Console fix failed", e, appCheckHint), e)
+      throw IllegalStateException(formatFailureMessage("Console fix failed", e), e)
     }
   }
 
