@@ -1,0 +1,6 @@
+{
+  "name": "GrassSSH",
+  "description": "A modern Android SSH client with live terminal emulation, SFTP file browser, SSH key vault, and command snippets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,75 @@
+<resources>
+    <string name="app_name">GrassSSH</string>
+
+    <!-- Navigation -->
+    <string name="nav_hosts">Hosts</string>
+    <string name="nav_terminal">Terminal</string>
+    <string name="nav_ai">AI</string>
+    <string name="nav_keys">Keys</string>
+    <string name="nav_snippets">Snippets</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Hosts Screen -->
+    <string name="hosts_subtitle">SSH Client &amp; Terminal</string>
+    <string name="quick_connect_hint">user@host:port</string>
+    <string name="quick_connect_action">Connect</string>
+    <string name="search_hosts_hint">Search hosts, IPs, users...</string>
+    <string name="add_host">New Host</string>
+    <string name="edit_host">Edit Host</string>
+    <string name="empty_hosts_title">No SSH hosts saved yet</string>
+    <string name="empty_hosts_desc">Use Quick Connect above for an instant shell, or tap New Host to save a server profile with key or password auth.</string>
+    <string name="connect_button">Connect</string>
+    <string name="active_sessions_banner">%d active session(s)</string>
+    <string name="open_terminal">Open Terminal</string>
+
+    <!-- Host Editor -->
+    <string name="label_alias">Display Name / Alias</string>
+    <string name="label_hostname">Hostname or IP Address</string>
+    <string name="label_port">Port</string>
+    <string name="label_username">Username</string>
+    <string name="label_group">Group Tag</string>
+    <string name="label_auth_method">Authentication</string>
+    <string name="auth_password">Password</string>
+    <string name="auth_private_key">SSH Key</string>
+    <string name="auth_ask_on_connect">Ask on Connect</string>
+    <string name="label_password">Password (stored locally)</string>
+    <string name="label_select_key">Select SSH Key</string>
+    <string name="label_startup_cmd">Startup Command (optional)</string>
+    <string name="save_host">Save Host</string>
+    <string name="cancel">Cancel</string>
+    <string name="delete">Delete</string>
+
+    <!-- Terminal Screen -->
+    <string name="no_active_session_title">No Active SSH Session</string>
+    <string name="no_active_session_desc">Connect to a saved host or enter user@host in Quick Connect to launch a live interactive SSH terminal.</string>
+    <string name="go_to_hosts">Browse Hosts</string>
+    <string name="terminal_input_hint">Type command or press Enter...</string>
+    <string name="send">Send</string>
+    <string name="disconnect">Disconnect</string>
+    <string name="reconnect">Reconnect</string>
+    <string name="sftp_browser">SFTP Files</string>
+    <string name="snippets_sheet_title">Run Snippet</string>
+    <string name="clear_terminal">Clear</string>
+    <string name="copy_output">Copy Log</string>
+
+    <!-- Keys Screen -->
+    <string name="keys_title">SSH Key Vault</string>
+    <string name="generate_key">Generate Key</string>
+    <string name="import_key">Import Key</string>
+    <string name="empty_keys_title">No SSH Keys in Vault</string>
+    <string name="empty_keys_desc">Generate an RSA or ECDSA keypair on-device or import an existing private key for passwordless SSH login.</string>
+    <string name="copy_public_key">Copy Public Key</string>
+
+    <!-- Snippets Screen -->
+    <string name="snippets_title">Command Snippets</string>
+    <string name="add_snippet">New Snippet</string>
+
+    <!-- Settings Screen -->
+    <string name="settings_title">Terminal &amp; Security</string>
+    <string name="known_hosts_title">Known Hosts (TOFU)</string>
+
+    <!-- GrassSSH AI System -->
+    <string name="ai_system_name">GrassSSH AI System</string>
+    <string name="ai_system_subtitle">Linux, SSH &amp; Server Copilot</string>
+    <string name="ai_prompt_hint">Ask GrassSSH AI System about Linux, SSH, errors, or commands...</string>
+</resources>
