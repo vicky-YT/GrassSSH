@@ -71,5 +71,12 @@ class GrassSshPureUnitTest {
 
     val extracted = GrassSshAiRepository.extractShellCommands("```bash\nsudo systemctl restart nginx\n```")
     assertEquals(listOf("sudo systemctl restart nginx"), extracted)
+
+    val eightyLines = (1..80).joinToString("\n") { "line-$it" }
+    val limited = GrassSshAiRepository.limitTerminalContext(eightyLines)
+    val limitedLines = limited.lines()
+    assertEquals(50, limitedLines.size)
+    assertEquals("line-31", limitedLines.first())
+    assertEquals("line-80", limitedLines.last())
   }
 }

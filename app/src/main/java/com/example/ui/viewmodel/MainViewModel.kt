@@ -150,7 +150,9 @@ class MainViewModel(
     val terminalContext = if (_includeAiTerminalContext.value && activeSess != null) {
       val plainOutput = activeSess.copyPlainOutput()
       if (plainOutput.isNotBlank()) {
-        "Session: ${activeSess.hostConfig.username}@${activeSess.hostConfig.hostname}:${activeSess.hostConfig.port} (${activeSess.status.value.label})\n$plainOutput"
+        GrassSshAiRepository.limitTerminalContext(
+          "Session: ${activeSess.hostConfig.username}@${activeSess.hostConfig.hostname}:${activeSess.hostConfig.port} (${activeSess.status.value.label})\n$plainOutput",
+        )
       } else {
         null
       }
@@ -220,7 +222,9 @@ class MainViewModel(
     _buildPlanState.value = BuildPlanUiState.Generating
     val activeSess = sessionManager.getSession(activeSessionId.value)
     val terminalContext = if (_includeAiTerminalContext.value) {
-      activeSess?.copyPlainOutput()?.takeIf { it.isNotBlank() }
+      activeSess?.copyPlainOutput()
+        ?.takeIf { it.isNotBlank() }
+        ?.let { GrassSshAiRepository.limitTerminalContext(it) }
     } else {
       null
     }
@@ -258,7 +262,9 @@ class MainViewModel(
       _consoleFixState.value = ConsoleFixUiState.Error("No console output found in the active session yet.")
       return
     }
-    val fullContext = "Session: ${activeSess.hostConfig.username}@${activeSess.hostConfig.hostname}:${activeSess.hostConfig.port} (${activeSess.status.value.label})\n$plainOutput"
+    val fullContext = GrassSshAiRepository.limitTerminalContext(
+      "Session: ${activeSess.hostConfig.username}@${activeSess.hostConfig.hostname}:${activeSess.hostConfig.port} (${activeSess.status.value.label})\n$plainOutput",
+    )
     consoleFixJob?.cancel()
     _consoleFixState.value = ConsoleFixUiState.Diagnosing
     val customInstructions = settings.value.customAiInstructions

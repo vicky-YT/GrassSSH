@@ -11,6 +11,7 @@ import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.content
 import com.google.firebase.ai.type.generationConfig
+import com.google.firebase.ai.type.thinkingConfig
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.flow.Flow
@@ -19,9 +20,10 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 
 private const val TAG = "GrassSshAiSystem"
-private const val PRIMARY_MODEL = "gemini-3.8-flash"
-private const val FALLBACK_MODEL = "gemini-3.5-flash-lite"
-private const val MODEL_REQUEST_TIMEOUT_MS = 35_000L
+private const val PRIMARY_MODEL = "gemini-2.5-flash"
+private const val FALLBACK_MODEL = "gemini-2.5-flash-lite"
+private const val MODEL_REQUEST_TIMEOUT_MS = 120_000L
+private const val MAX_TERMINAL_CONTEXT_LINES = 50
 
 data class AiChatMessage(
   val id: String,
@@ -107,6 +109,9 @@ class GrassSshAiRepository(
       modelName = modelName,
       generationConfig = generationConfig {
         temperature = 0.3f
+        thinkingConfig = thinkingConfig {
+          thinkingBudget = 0
+        }
       },
       requestOptions = defaultRequestOptions,
       systemInstruction = chatSystemInstruction,
@@ -164,6 +169,9 @@ class GrassSshAiRepository(
         temperature = 0.2f
         responseMimeType = "application/json"
         responseSchema = buildPlanSchema
+        thinkingConfig = thinkingConfig {
+          thinkingBudget = 0
+        }
       },
       requestOptions = defaultRequestOptions,
       systemInstruction = builderSystemInstruction,
@@ -223,6 +231,9 @@ class GrassSshAiRepository(
         temperature = 0.15f
         responseMimeType = "application/json"
         responseSchema = consoleFixSchema
+        thinkingConfig = thinkingConfig {
+          thinkingBudget = 0
+        }
       },
       requestOptions = defaultRequestOptions,
       systemInstruction = fixErrorSystemInstruction,
@@ -295,8 +306,8 @@ class GrassSshAiRepository(
         appendLine()
       }
       if (!terminalContext.isNullOrBlank()) {
-        appendLine("=== Live JSch Terminal Context (Recent Output) ===")
-        appendLine(terminalContext.takeLast(3500))
+        appendLine("=== Live JSch Terminal Context (Last $MAX_TERMINAL_CONTEXT_LINES Lines) ===")
+        appendLine(limitTerminalContext(terminalContext))
         appendLine("=== End Terminal Context ===")
         appendLine()
       }
@@ -307,7 +318,7 @@ class GrassSshAiRepository(
     val accumulated = StringBuilder()
 
     try {
-      withTimeout(30_000L) {
+      withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
         chat.sendMessageStream(fullPrompt).collect { chunk ->
           val piece = chunk.text.orEmpty()
           if (piece.isNotEmpty()) {
@@ -325,7 +336,7 @@ class GrassSshAiRepository(
         Log.w(TAG, "Stream ended after partial response; keeping received text.", e)
         return@flow
       }
-      Log.w(TAG, "Primary stream timed out at 30s; falling back to $FALLBACK_MODEL.", e)
+      Log.w(TAG, "Primary stream timed out at 120s; falling back to $FALLBACK_MODEL.", e)
       runFallbackStreamOrUnary(chatHistory, fullPrompt, emitChunk = { emit(it) })
     } catch (e: Exception) {
       if (accumulated.isBlank() && isTransientHighDemandOrTimeout(e)) {
@@ -346,7 +357,7 @@ class GrassSshAiRepository(
     val fallbackAccumulated = StringBuilder()
     try {
       val fallbackChat = chatFallbackModel.startChat(history = chatHistory)
-      withTimeout(30_000L) {
+      withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
         fallbackChat.sendMessageStream(fullPrompt).collect { chunk ->
           val piece = chunk.text.orEmpty()
           if (piece.isNotEmpty()) {
@@ -356,7 +367,7 @@ class GrassSshAiRepository(
         }
       }
       if (fallbackAccumulated.isBlank()) {
-        val unary = withTimeout(25_000L) {
+        val unary = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
           chatFallbackModel.startChat(history = chatHistory).sendMessage(fullPrompt)
         }
         val unaryText = unary.text?.takeIf { it.isNotBlank() }
@@ -394,14 +405,14 @@ class GrassSshAiRepository(
         appendLine("Server / User Preferences: $customInstructions")
       }
       if (!terminalContext.isNullOrBlank()) {
-        appendLine("Recent SSH Terminal Output:")
-        appendLine(terminalContext.takeLast(2500))
+        appendLine("Recent SSH Terminal Output (Last $MAX_TERMINAL_CONTEXT_LINES Lines):")
+        appendLine(limitTerminalContext(terminalContext))
       }
       appendLine("Build Request: $prompt")
     }
 
     try {
-      val response = withTimeout(45_000L) {
+      val response = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
         builderModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
@@ -425,7 +436,7 @@ class GrassSshAiRepository(
     composedPrompt: String,
   ): GeneratedBuildPlan {
     try {
-      val response = withTimeout(40_000L) {
+      val response = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
         builderFallbackModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
@@ -458,12 +469,12 @@ class GrassSshAiRepository(
       if (!customHint.isNullOrBlank()) {
         appendLine("Detected Error / User Note: $customHint")
       }
-      appendLine("=== Console Output to Diagnose & Fix ===")
-      appendLine(terminalContext.takeLast(3500))
+      appendLine("=== Console Output to Diagnose & Fix (Last $MAX_TERMINAL_CONTEXT_LINES Lines) ===")
+      appendLine(limitTerminalContext(terminalContext))
     }
 
     try {
-      val response = withTimeout(45_000L) {
+      val response = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
         fixErrorModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
@@ -487,7 +498,7 @@ class GrassSshAiRepository(
     composedPrompt: String,
   ): ConsoleFixPlan {
     try {
-      val response = withTimeout(40_000L) {
+      val response = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
         fixErrorFallbackModel.generateContent(composedPrompt)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
@@ -504,6 +515,18 @@ class GrassSshAiRepository(
 
   companion object {
     private val CODE_BLOCK_REGEX = Regex("```(?:bash|sh|shell|zsh)?\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+
+    fun limitTerminalContext(
+      terminalContext: String,
+      maxLines: Int = MAX_TERMINAL_CONTEXT_LINES,
+    ): String {
+      if (terminalContext.isBlank() || maxLines <= 0) return ""
+      return terminalContext
+        .trimEnd()
+        .lines()
+        .takeLast(maxLines)
+        .joinToString("\n")
+    }
 
     fun extractShellCommands(markdownText: String): List<String> {
       val commands = LinkedHashSet<String>()
