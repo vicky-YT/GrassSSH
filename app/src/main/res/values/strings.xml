@@ -71,5 +71,5 @@
     <!-- GrassSSH AI System -->
     <string name="ai_system_name">GrassSSH AI System</string>
     <string name="ai_system_subtitle">Linux, SSH &amp; Server Copilot</string>
-    <string name="ai_prompt_hint">Ask GrassSSH AI System about Linux, SSH, errors, or commands...</string>
+    <string name="ai_prompt_hint">Ask in English or Hinglish, or upload a screenshot...</string>
 </resources>

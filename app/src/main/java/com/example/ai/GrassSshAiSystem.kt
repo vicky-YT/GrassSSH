@@ -1,12 +1,14 @@
 package com.example.ai
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
 import android.util.Log
 import com.google.firebase.Firebase
 import com.google.firebase.FirebaseApp
 import com.google.firebase.ai.ai
+import com.google.firebase.ai.type.Content
 import com.google.firebase.ai.type.RequestOptions
 import com.google.firebase.ai.type.Schema
 import com.google.firebase.ai.type.ThinkingLevel
@@ -32,6 +34,7 @@ data class AiChatMessage(
   val text: String,
   val extractedCommands: List<String> = emptyList(),
   val isStreaming: Boolean = false,
+  val imageBitmap: Bitmap? = null,
 )
 
 sealed interface AiSystemUiState {
@@ -93,7 +96,8 @@ class GrassSshAiRepository(
         """
         You are GrassSSH AI System, a senior Linux, SSH, DevOps, and Site Reliability Engineering assistant built into the GrassSSH Android terminal client.
         - Always identify yourself as GrassSSH AI System when asked your name or role.
-        - When terminal output or an error is attached:
+        - You understand and explain fluently in both English and Hinglish (Hindi written in English script). Follow the active Language Preference in the user prompt, and keep all shell commands, flags, filenames, and code strictly in valid English.
+        - When terminal output, an error, or an uploaded screenshot/photo is attached:
           1. Pinpoint the exact root cause concisely first.
           2. Provide idempotent, production-safe fix commands inside fenced ```bash blocks so the user can run them with one tap.
           3. Include a quick verification command to confirm the fix worked.
@@ -288,6 +292,8 @@ class GrassSshAiRepository(
     userPrompt: String,
     terminalContext: String?,
     customInstructions: String = "",
+    languageMode: AiLanguageMode = AiLanguageMode.ENGLISH_AND_HINGLISH,
+    imageBitmap: Bitmap? = null,
   ): Flow<String> = flow {
     ensureReady()
 
@@ -296,11 +302,14 @@ class GrassSshAiRepository(
       .takeLast(10)
       .map { msg ->
         content(role = if (msg.isUser) "user" else "model") {
-          text(msg.text)
+          val prefix = if (msg.imageBitmap != null) "[User attached an image/screenshot]\n" else ""
+          text(prefix + msg.text)
         }
       }
 
     val fullPrompt = buildString {
+      appendLine("=== ${languageMode.promptInstruction} ===")
+      appendLine()
       if (customInstructions.isNotBlank()) {
         appendLine("=== Custom GrassSSH AI System Preferences ===")
         appendLine(customInstructions)
@@ -312,7 +321,17 @@ class GrassSshAiRepository(
         appendLine("=== End Terminal Context ===")
         appendLine()
       }
+      if (imageBitmap != null) {
+        appendLine("Note: The user has uploaded a screenshot/photo with this message. Inspect every visible error, command, status, or config in the image carefully and explain clearly.")
+      }
       append(userPrompt)
+    }
+
+    val userMessageContent = content(role = "user") {
+      if (imageBitmap != null) {
+        image(imageBitmap)
+      }
+      text(fullPrompt)
     }
 
     val chat = chatModel.startChat(history = chatHistory)
@@ -320,7 +339,7 @@ class GrassSshAiRepository(
 
     try {
       withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
-        chat.sendMessageStream(fullPrompt).collect { chunk ->
+        chat.sendMessageStream(userMessageContent).collect { chunk ->
           val piece = chunk.text.orEmpty()
           if (piece.isNotEmpty()) {
             accumulated.append(piece)
@@ -338,11 +357,11 @@ class GrassSshAiRepository(
         return@flow
       }
       Log.w(TAG, "Primary stream timed out at 120s; falling back to $FALLBACK_MODEL.", e)
-      runFallbackStreamOrUnary(chatHistory, fullPrompt, emitChunk = { emit(it) })
+      runFallbackStreamOrUnary(chatHistory, userMessageContent, emitChunk = { emit(it) })
     } catch (e: Exception) {
       if (accumulated.isBlank() && isTransientHighDemandOrTimeout(e)) {
         Log.w(TAG, "Primary model hit transient/high-demand error; falling back to $FALLBACK_MODEL.", e)
-        runFallbackStreamOrUnary(chatHistory, fullPrompt, emitChunk = { emit(it) })
+        runFallbackStreamOrUnary(chatHistory, userMessageContent, emitChunk = { emit(it) })
       } else {
         Log.e(TAG, "GrassSSH AI System inference failed", e)
         throw IllegalStateException(formatFailureMessage("GrassSSH AI System failed", e), e)
@@ -351,15 +370,15 @@ class GrassSshAiRepository(
   }
 
   private suspend fun runFallbackStreamOrUnary(
-    chatHistory: List<com.google.firebase.ai.type.Content>,
-    fullPrompt: String,
+    chatHistory: List<Content>,
+    userMessageContent: Content,
     emitChunk: suspend (String) -> Unit,
   ) {
     val fallbackAccumulated = StringBuilder()
     try {
       val fallbackChat = chatFallbackModel.startChat(history = chatHistory)
       withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
-        fallbackChat.sendMessageStream(fullPrompt).collect { chunk ->
+        fallbackChat.sendMessageStream(userMessageContent).collect { chunk ->
           val piece = chunk.text.orEmpty()
           if (piece.isNotEmpty()) {
             fallbackAccumulated.append(piece)
@@ -369,7 +388,7 @@ class GrassSshAiRepository(
       }
       if (fallbackAccumulated.isBlank()) {
         val unary = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
-          chatFallbackModel.startChat(history = chatHistory).sendMessage(fullPrompt)
+          chatFallbackModel.startChat(history = chatHistory).sendMessage(userMessageContent)
         }
         val unaryText = unary.text?.takeIf { it.isNotBlank() }
           ?: throw IllegalStateException("GrassSSH AI System returned an empty response.")
@@ -395,10 +414,13 @@ class GrassSshAiRepository(
     customInstructions: String = "",
     terminalContext: String? = null,
     sshUsername: String? = null,
+    languageMode: AiLanguageMode = AiLanguageMode.ENGLISH_AND_HINGLISH,
   ): GeneratedBuildPlan {
     ensureReady()
 
     val composedPrompt = buildString {
+      appendLine(languageMode.promptInstruction)
+      appendLine("Write summary and step explanations in the preferred language above while keeping bash commands strictly valid English.")
       if (!sshUsername.isNullOrBlank()) {
         appendLine("Connected SSH User: $sshUsername (${if (sshUsername == "root") "root privileges, omit sudo" else "non-root user, use sudo when privileged"})")
       }
@@ -453,14 +475,18 @@ class GrassSshAiRepository(
   }
 
   suspend fun diagnoseAndFixConsoleError(
-    terminalContext: String,
+    terminalContext: String?,
     customHint: String? = null,
     customInstructions: String = "",
     sshUsername: String? = null,
+    languageMode: AiLanguageMode = AiLanguageMode.ENGLISH_AND_HINGLISH,
+    imageBitmap: Bitmap? = null,
   ): ConsoleFixPlan {
     ensureReady()
 
     val composedPrompt = buildString {
+      appendLine(languageMode.promptInstruction)
+      appendLine("Write rootCause and fix step explanations in the preferred language above while keeping bash fix commands strictly valid English.")
       if (!sshUsername.isNullOrBlank()) {
         appendLine("Connected SSH User: $sshUsername (${if (sshUsername == "root") "root privileges, omit sudo" else "non-root user, use sudo when privileged"})")
       }
@@ -470,13 +496,25 @@ class GrassSshAiRepository(
       if (!customHint.isNullOrBlank()) {
         appendLine("Detected Error / User Note: $customHint")
       }
-      appendLine("=== Console Output to Diagnose & Fix (Last $MAX_TERMINAL_CONTEXT_LINES Lines) ===")
-      appendLine(limitTerminalContext(terminalContext))
+      if (imageBitmap != null) {
+        appendLine("An error screenshot/photo is attached. Read all visible error lines, logs, or UI diagnostics from the image.")
+      }
+      if (!terminalContext.isNullOrBlank()) {
+        appendLine("=== Console Output to Diagnose & Fix (Last $MAX_TERMINAL_CONTEXT_LINES Lines) ===")
+        appendLine(limitTerminalContext(terminalContext))
+      }
+    }
+
+    val fixContent = content {
+      if (imageBitmap != null) {
+        image(imageBitmap)
+      }
+      text(composedPrompt)
     }
 
     try {
       val response = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
-        fixErrorModel.generateContent(composedPrompt)
+        fixErrorModel.generateContent(fixContent)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("GrassSSH AI System returned an empty fix plan.")
@@ -484,11 +522,11 @@ class GrassSshAiRepository(
     } catch (e: CancellationException) {
       if (e !is TimeoutCancellationException) throw e
       Log.w(TAG, "Primary fix model timed out; trying $FALLBACK_MODEL", e)
-      return diagnoseConsoleErrorFallback(composedPrompt)
+      return diagnoseConsoleErrorFallback(fixContent)
     } catch (e: Exception) {
       if (isTransientHighDemandOrTimeout(e)) {
         Log.w(TAG, "Primary fix model hit transient/high-demand error; trying $FALLBACK_MODEL", e)
-        return diagnoseConsoleErrorFallback(composedPrompt)
+        return diagnoseConsoleErrorFallback(fixContent)
       }
       Log.e(TAG, "GrassSSH AI System console fix failed", e)
       throw IllegalStateException(formatFailureMessage("Console fix failed", e), e)
@@ -496,11 +534,11 @@ class GrassSshAiRepository(
   }
 
   private suspend fun diagnoseConsoleErrorFallback(
-    composedPrompt: String,
+    fixContent: Content,
   ): ConsoleFixPlan {
     try {
       val response = withTimeout(MODEL_REQUEST_TIMEOUT_MS) {
-        fixErrorFallbackModel.generateContent(composedPrompt)
+        fixErrorFallbackModel.generateContent(fixContent)
       }
       val jsonText = response.text?.takeIf { it.isNotBlank() }
         ?: throw IllegalStateException("GrassSSH AI System returned an empty fix plan.")

@@ -3,6 +3,11 @@ package com.example.ui.screens
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -33,11 +38,13 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.BookmarkAdd
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.ChatBubbleOutline
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.CleaningServices
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.CloseFullscreen
@@ -47,6 +54,7 @@ import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RocketLaunch
 import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Warning
@@ -57,6 +65,8 @@ import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -73,12 +83,15 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
@@ -89,6 +102,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.R
 import com.example.ai.AiChatMessage
+import com.example.ai.AiImageAttachmentHelper
+import com.example.ai.AiLanguageMode
 import com.example.ai.AiSystemUiState
 import com.example.ai.BuildPlanStep
 import com.example.ai.BuildPlanUiState
@@ -99,6 +114,7 @@ import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldPhosphor
 import com.example.ui.theme.JetBrainsMonoFamily
+import kotlinx.coroutines.launch
 
 private val AI_QUICK_PROMPTS = listOf(
   "Explain output" to "Explain the attached shell session output clearly, highlight any errors or warnings, and tell me what it means.",
@@ -127,15 +143,17 @@ fun GrassSshAiScreen(
   buildPlanState: BuildPlanUiState,
   consoleFixState: ConsoleFixUiState,
   customAiInstructions: String,
+  aiLanguageMode: AiLanguageMode,
   activeSessionLabel: String?,
   hasActiveSession: Boolean,
   includeTerminalContext: Boolean,
   onToggleIncludeContext: (Boolean) -> Unit,
-  onSendPrompt: (String) -> Unit,
+  onSelectLanguageMode: (AiLanguageMode) -> Unit,
+  onSendPrompt: (String, Bitmap?) -> Unit,
   onClearChat: () -> Unit,
   onGenerateBuildPlan: (String) -> Unit,
   onClearBuildPlan: () -> Unit,
-  onDiagnoseConsoleError: (String?) -> Unit,
+  onDiagnoseConsoleError: (String?, Bitmap?) -> Unit,
   onClearConsoleFix: () -> Unit,
   onRunCommand: (String) -> Unit,
   onRunBuildPlan: (GeneratedBuildPlan) -> Unit,
@@ -164,10 +182,12 @@ fun GrassSshAiScreen(
         buildPlanState = buildPlanState,
         consoleFixState = consoleFixState,
         customAiInstructions = customAiInstructions,
+        aiLanguageMode = aiLanguageMode,
         activeSessionLabel = activeSessionLabel,
         hasActiveSession = hasActiveSession,
         includeTerminalContext = includeTerminalContext,
         onToggleIncludeContext = onToggleIncludeContext,
+        onSelectLanguageMode = onSelectLanguageMode,
         onSendPrompt = onSendPrompt,
         onClearChat = onClearChat,
         onGenerateBuildPlan = onGenerateBuildPlan,
@@ -197,15 +217,17 @@ fun GrassSshAiPanel(
   buildPlanState: BuildPlanUiState,
   consoleFixState: ConsoleFixUiState,
   customAiInstructions: String,
+  aiLanguageMode: AiLanguageMode,
   activeSessionLabel: String?,
   hasActiveSession: Boolean,
   includeTerminalContext: Boolean,
   onToggleIncludeContext: (Boolean) -> Unit,
-  onSendPrompt: (String) -> Unit,
+  onSelectLanguageMode: (AiLanguageMode) -> Unit,
+  onSendPrompt: (String, Bitmap?) -> Unit,
   onClearChat: () -> Unit,
   onGenerateBuildPlan: (String) -> Unit,
   onClearBuildPlan: () -> Unit,
-  onDiagnoseConsoleError: (String?) -> Unit,
+  onDiagnoseConsoleError: (String?, Bitmap?) -> Unit,
   onClearConsoleFix: () -> Unit,
   onRunCommand: (String) -> Unit,
   onRunBuildPlan: (GeneratedBuildPlan) -> Unit,
@@ -226,13 +248,39 @@ fun GrassSshAiPanel(
   modifier: Modifier = Modifier,
 ) {
   val context = LocalContext.current
+  val coroutineScope = rememberCoroutineScope()
   var mode by rememberSaveable(initialMode) { mutableStateOf(initialMode) }
   var promptInput by rememberSaveable { mutableStateOf("") }
   var buildPromptInput by rememberSaveable { mutableStateOf("") }
   var fixHintInput by rememberSaveable { mutableStateOf("") }
   var showCustomizeDialog by remember { mutableStateOf(false) }
+  var showLanguageMenu by remember { mutableStateOf(false) }
   var pendingConfirmPlan by remember { mutableStateOf<GeneratedBuildPlan?>(null) }
   var pendingConfirmFixPlan by remember { mutableStateOf<ConsoleFixPlan?>(null) }
+  var chatAttachedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+  var fixAttachedBitmap by remember { mutableStateOf<Bitmap?>(null) }
+  var isDecodingPhoto by remember { mutableStateOf(false) }
+  var photoTargetMode by remember { mutableStateOf(AiPanelMode.ASK) }
+
+  val photoPickerLauncher = rememberLauncherForActivityResult(
+    contract = ActivityResultContracts.PickVisualMedia(),
+  ) { uri ->
+    if (uri == null) return@rememberLauncherForActivityResult
+    isDecodingPhoto = true
+    coroutineScope.launch {
+      val decoded = AiImageAttachmentHelper.decodeAndScaleImageFromUri(context, uri)
+      isDecodingPhoto = false
+      if (decoded != null) {
+        if (photoTargetMode == AiPanelMode.FIX) {
+          fixAttachedBitmap = decoded
+        } else {
+          chatAttachedBitmap = decoded
+        }
+      } else {
+        onNotify("Could not read selected photo")
+      }
+    }
+  }
 
   LaunchedEffect(modeTriggerKey, forcedMode) {
     if (modeTriggerKey > 0 && forcedMode != null) {
@@ -408,6 +456,34 @@ fun GrassSshAiPanel(
         label = { Text("Ask AI") },
         modifier = Modifier.testTag("ai_mode_ask"),
       )
+      Box {
+        FilterChip(
+          selected = true,
+          onClick = { showLanguageMenu = true },
+          leadingIcon = {
+            Icon(Icons.Default.Translate, contentDescription = "AI Response Language", modifier = Modifier.size(16.dp))
+          },
+          label = { Text(aiLanguageMode.shortLabel, maxLines = 1) },
+          modifier = Modifier.testTag("ai_language_mode_chip"),
+        )
+        DropdownMenu(
+          expanded = showLanguageMenu,
+          onDismissRequest = { showLanguageMenu = false },
+        ) {
+          AiLanguageMode.entries.forEach { option ->
+            DropdownMenuItem(
+              text = { Text(option.displayName) },
+              trailingIcon = if (option == aiLanguageMode) {
+                { Icon(Icons.Default.Check, contentDescription = null, modifier = Modifier.size(16.dp)) }
+              } else null,
+              onClick = {
+                onSelectLanguageMode(option)
+                showLanguageMenu = false
+              },
+            )
+          }
+        }
+      }
       if (hasTerminalContextSource && activeSessionLabel != null) {
         FilterChip(
           selected = includeTerminalContext,
@@ -491,20 +567,45 @@ fun GrassSshAiPanel(
             OutlinedTextField(
               value = fixHintInput,
               onValueChange = { fixHintInput = it },
-              placeholder = { Text("Optional: describe what failed or what you were running...") },
+              placeholder = { Text("Optional: English or Hinglish me batayein kya error aa raha hai...") },
               minLines = 1,
               maxLines = 3,
               modifier = Modifier
                 .fillMaxWidth()
                 .testTag("fix_hint_input"),
             )
+            fixAttachedBitmap?.let { attached ->
+              AttachedImagePreviewCard(
+                bitmap = attached,
+                subtitle = "Error screenshot attached",
+                onRemove = { fixAttachedBitmap = null },
+                removeButtonTag = "fix_remove_photo_button",
+              )
+            }
+            OutlinedButton(
+              onClick = {
+                photoTargetMode = AiPanelMode.FIX
+                photoPickerLauncher.launch(
+                  PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                )
+              },
+              enabled = !isFixBusy && !isDecodingPhoto,
+              modifier = Modifier
+                .fillMaxWidth()
+                .minimumInteractiveComponentSize()
+                .testTag("fix_attach_photo_button"),
+            ) {
+              Icon(Icons.Default.AddPhotoAlternate, contentDescription = null, modifier = Modifier.size(18.dp))
+              Spacer(modifier = Modifier.width(8.dp))
+              Text(if (fixAttachedBitmap == null) "Upload Error Photo / Screenshot" else "Change Error Photo")
+            }
             Button(
               onClick = {
                 if (!isFixBusy) {
-                  onDiagnoseConsoleError(fixHintInput.takeIf { it.isNotBlank() })
+                  onDiagnoseConsoleError(fixHintInput.takeIf { it.isNotBlank() }, fixAttachedBitmap)
                 }
               },
-              enabled = !isFixBusy && hasTerminalContextSource,
+              enabled = !isFixBusy && (hasTerminalContextSource || fixAttachedBitmap != null),
               modifier = Modifier
                 .fillMaxWidth()
                 .minimumInteractiveComponentSize()
@@ -517,11 +618,17 @@ fun GrassSshAiPanel(
                   color = MaterialTheme.colorScheme.onPrimary,
                 )
                 Spacer(modifier = Modifier.width(8.dp))
-                Text("Analyzing Console Output...")
+                Text("Analyzing Problem...")
               } else {
                 Icon(Icons.Default.BugReport, contentDescription = null, modifier = Modifier.size(18.dp))
                 Spacer(modifier = Modifier.width(8.dp))
-                Text(if (hasTerminalContextSource) "Diagnose & Generate Safe Fix" else "Open an SSH Session First")
+                Text(
+                  when {
+                    fixAttachedBitmap != null -> "Diagnose Photo & Generate Fix"
+                    hasTerminalContextSource -> "Diagnose & Generate Safe Fix"
+                    else -> "Connect SSH or Upload Photo"
+                  },
+                )
               }
             }
           }
@@ -725,7 +832,11 @@ fun GrassSshAiPanel(
         AI_QUICK_PROMPTS.forEach { (label, fullPrompt) ->
           AssistChip(
             onClick = {
-              if (!isChatBusy) onSendPrompt(fullPrompt)
+              if (!isChatBusy) {
+                val photoToSend = chatAttachedBitmap
+                chatAttachedBitmap = null
+                onSendPrompt(fullPrompt, photoToSend)
+              }
             },
             label = { Text(label) },
           )
@@ -765,7 +876,7 @@ fun GrassSshAiPanel(
                   )
                 }
                 Text(
-                  text = "Ask for Linux commands, troubleshoot VPS connection errors, inspect live JSch terminal logs, or switch to 'Build from Prompt' to generate & run multi-step setups.",
+                  text = "Ask in English or Hinglish, upload a screenshot/photo of any error using the photo button below, inspect live SSH terminal logs, or switch to Pro Build to generate server setups.",
                   style = MaterialTheme.typography.bodyMedium,
                   color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -832,7 +943,25 @@ fun GrassSshAiPanel(
         }
       }
 
+      // Attached Photo Preview above Prompt Bar
+      chatAttachedBitmap?.let { attached ->
+        Box(
+          modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .padding(start = 12.dp, end = 12.dp, top = 8.dp),
+        ) {
+          AttachedImagePreviewCard(
+            bitmap = attached,
+            subtitle = "Photo attached • explain problem or tap Send",
+            onRemove = { chatAttachedBitmap = null },
+            removeButtonTag = "ai_remove_photo_button",
+          )
+        }
+      }
+
       // Chat Prompt Input Bar
+      val canSendChat = !isChatBusy && (promptInput.isNotBlank() || chatAttachedBitmap != null)
       Row(
         modifier = Modifier
           .fillMaxWidth()
@@ -840,6 +969,29 @@ fun GrassSshAiPanel(
           .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
       ) {
+        IconButton(
+          onClick = {
+            photoTargetMode = AiPanelMode.ASK
+            photoPickerLauncher.launch(
+              PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+            )
+          },
+          enabled = !isChatBusy && !isDecodingPhoto,
+          modifier = Modifier
+            .size(48.dp)
+            .testTag("ai_attach_photo_button"),
+        ) {
+          if (isDecodingPhoto && photoTargetMode == AiPanelMode.ASK) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+          } else {
+            Icon(
+              imageVector = Icons.Default.AddPhotoAlternate,
+              contentDescription = "Upload photo or screenshot",
+              tint = if (chatAttachedBitmap != null) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+          }
+        }
+        Spacer(modifier = Modifier.width(4.dp))
         OutlinedTextField(
           value = promptInput,
           onValueChange = { promptInput = it },
@@ -855,9 +1007,11 @@ fun GrassSshAiPanel(
           keyboardActions = KeyboardActions(
             onSend = {
               val trimmed = promptInput.trim()
-              if (trimmed.isNotEmpty() && !isChatBusy) {
-                onSendPrompt(trimmed)
+              val photoToSend = chatAttachedBitmap
+              if ((trimmed.isNotEmpty() || photoToSend != null) && !isChatBusy) {
                 promptInput = ""
+                chatAttachedBitmap = null
+                onSendPrompt(trimmed, photoToSend)
               }
             },
           ),
@@ -869,13 +1023,15 @@ fun GrassSshAiPanel(
         Surface(
           onClick = {
             val trimmed = promptInput.trim()
-            if (trimmed.isNotEmpty() && !isChatBusy) {
-              onSendPrompt(trimmed)
+            val photoToSend = chatAttachedBitmap
+            if ((trimmed.isNotEmpty() || photoToSend != null) && !isChatBusy) {
               promptInput = ""
+              chatAttachedBitmap = null
+              onSendPrompt(trimmed, photoToSend)
             }
           },
           shape = RoundedCornerShape(12.dp),
-          color = if (!isChatBusy && promptInput.isNotBlank()) {
+          color = if (canSendChat) {
             MaterialTheme.colorScheme.primary
           } else {
             MaterialTheme.colorScheme.surfaceVariant
@@ -888,7 +1044,7 @@ fun GrassSshAiPanel(
             Icon(
               imageVector = Icons.AutoMirrored.Filled.Send,
               contentDescription = "Ask GrassSSH AI System",
-              tint = if (!isChatBusy && promptInput.isNotBlank()) {
+              tint = if (canSendChat) {
                 MaterialTheme.colorScheme.onPrimary
               } else {
                 MaterialTheme.colorScheme.onSurfaceVariant
@@ -1419,6 +1575,24 @@ private fun AiMessageBubble(
           }
         }
 
+        message.imageBitmap?.let { bmp ->
+          Image(
+            bitmap = bmp.asImageBitmap(),
+            contentDescription = "Uploaded problem screenshot",
+            contentScale = ContentScale.Crop,
+            modifier = Modifier
+              .fillMaxWidth()
+              .height(170.dp)
+              .padding(bottom = 8.dp)
+              .clip(RoundedCornerShape(10.dp))
+              .border(
+                1.dp,
+                MaterialTheme.colorScheme.outline.copy(alpha = 0.5f),
+                RoundedCornerShape(10.dp),
+              ),
+          )
+        }
+
         SelectionContainer {
           Text(
             text = message.text,
@@ -1476,6 +1650,59 @@ private fun AiMessageBubble(
             }
           }
         }
+      }
+    }
+  }
+}
+
+@Composable
+private fun AttachedImagePreviewCard(
+  bitmap: Bitmap,
+  subtitle: String,
+  onRemove: () -> Unit,
+  removeButtonTag: String,
+) {
+  Surface(
+    shape = RoundedCornerShape(10.dp),
+    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f),
+    border = androidx.compose.foundation.BorderStroke(
+      1.dp,
+      MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+    ),
+    modifier = Modifier.fillMaxWidth(),
+  ) {
+    Row(
+      modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Image(
+        bitmap = bitmap.asImageBitmap(),
+        contentDescription = "Attached photo preview",
+        contentScale = ContentScale.Crop,
+        modifier = Modifier
+          .size(48.dp)
+          .clip(RoundedCornerShape(8.dp)),
+      )
+      Spacer(modifier = Modifier.width(10.dp))
+      Text(
+        text = subtitle,
+        style = MaterialTheme.typography.bodySmall,
+        color = MaterialTheme.colorScheme.onSurface,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
+      )
+      IconButton(
+        onClick = onRemove,
+        modifier = Modifier
+          .size(48.dp)
+          .testTag(removeButtonTag),
+      ) {
+        Icon(
+          imageVector = Icons.Default.Close,
+          contentDescription = "Remove attached photo",
+          tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
       }
     }
   }

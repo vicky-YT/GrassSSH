@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.graphics.Bitmap
 import android.view.WindowManager
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -99,6 +100,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.R
 import com.example.ai.AiChatMessage
+import com.example.ai.AiLanguageMode
 import com.example.ai.AiSystemUiState
 import com.example.ai.BuildPlanUiState
 import com.example.ai.ConsoleErrorDetector
@@ -131,11 +133,12 @@ fun TerminalScreen(
   consoleFixState: ConsoleFixUiState,
   includeAiTerminalContext: Boolean,
   onToggleIncludeAiContext: (Boolean) -> Unit,
-  onSendAiPrompt: (String) -> Unit,
+  onSelectAiLanguageMode: (AiLanguageMode) -> Unit,
+  onSendAiPrompt: (String, Bitmap?) -> Unit,
   onClearAiChat: () -> Unit,
   onGenerateBuildPlan: (String) -> Unit,
   onClearBuildPlan: () -> Unit,
-  onDiagnoseConsoleError: (String?) -> Unit,
+  onDiagnoseConsoleError: (String?, Bitmap?) -> Unit,
   onClearConsoleFix: () -> Unit,
   onRunBuildPlan: (GeneratedBuildPlan) -> Unit,
   onRunFixPlan: (ConsoleFixPlan) -> Unit,
@@ -535,10 +538,12 @@ fun TerminalScreen(
                 buildPlanState = buildPlanState,
                 consoleFixState = consoleFixState,
                 customAiInstructions = settings.customAiInstructions,
+                aiLanguageMode = settings.aiLanguageMode,
                 activeSessionLabel = "${activeSession.hostConfig.username}@${activeSession.hostConfig.hostname}",
                 hasActiveSession = status == SessionStatus.CONNECTED,
                 includeTerminalContext = includeAiTerminalContext,
                 onToggleIncludeContext = onToggleIncludeAiContext,
+                onSelectLanguageMode = onSelectAiLanguageMode,
                 onSendPrompt = onSendAiPrompt,
                 onClearChat = onClearAiChat,
                 onGenerateBuildPlan = onGenerateBuildPlan,
@@ -602,10 +607,12 @@ fun TerminalScreen(
                 buildPlanState = buildPlanState,
                 consoleFixState = consoleFixState,
                 customAiInstructions = settings.customAiInstructions,
+                aiLanguageMode = settings.aiLanguageMode,
                 activeSessionLabel = "${activeSession.hostConfig.username}@${activeSession.hostConfig.hostname}",
                 hasActiveSession = status == SessionStatus.CONNECTED,
                 includeTerminalContext = includeAiTerminalContext,
                 onToggleIncludeContext = onToggleIncludeAiContext,
+                onSelectLanguageMode = onSelectAiLanguageMode,
                 onSendPrompt = onSendAiPrompt,
                 onClearChat = onClearAiChat,
                 onGenerateBuildPlan = onGenerateBuildPlan,
@@ -696,7 +703,7 @@ fun TerminalScreen(
                 forcedAiMode = AiPanelMode.FIX
                 aiModeTriggerKey += 1
                 showAiPanel = true
-                onDiagnoseConsoleError(detectedError.summaryLine)
+                onDiagnoseConsoleError(detectedError.summaryLine, null)
               },
               shape = RoundedCornerShape(8.dp),
               color = theme.accent,

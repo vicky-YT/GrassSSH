@@ -8,6 +8,7 @@ import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import com.example.ai.AiLanguageMode
 import com.example.ui.theme.TerminalThemePreset
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
@@ -21,6 +22,7 @@ data class TerminalSettings(
   val vibrateOnKey: Boolean = true,
   val defaultUsername: String = "root",
   val customAiInstructions: String = "",
+  val aiLanguageMode: AiLanguageMode = AiLanguageMode.ENGLISH_AND_HINGLISH,
 )
 
 class SettingsRepository(private val context: Context) {
@@ -31,12 +33,16 @@ class SettingsRepository(private val context: Context) {
     val VIBRATE_ON_KEY = booleanPreferencesKey("vibrate_on_key")
     val DEFAULT_USERNAME = stringPreferencesKey("default_username")
     val CUSTOM_AI_INSTRUCTIONS = stringPreferencesKey("custom_ai_instructions")
+    val AI_LANGUAGE_MODE = stringPreferencesKey("ai_language_mode")
   }
 
   val settings: Flow<TerminalSettings> = context.settingsDataStore.data.map { prefs ->
     val presetName = prefs[Keys.THEME_PRESET]
     val preset = TerminalThemePreset.entries.firstOrNull { it.name == presetName }
       ?: TerminalThemePreset.GRASS_PHOSPHOR
+    val langName = prefs[Keys.AI_LANGUAGE_MODE]
+    val languageMode = AiLanguageMode.entries.firstOrNull { it.name == langName }
+      ?: AiLanguageMode.ENGLISH_AND_HINGLISH
     TerminalSettings(
       themePreset = preset,
       fontSizeSp = (prefs[Keys.FONT_SIZE_SP] ?: 13).coerceIn(10, 20),
@@ -44,6 +50,7 @@ class SettingsRepository(private val context: Context) {
       vibrateOnKey = prefs[Keys.VIBRATE_ON_KEY] ?: true,
       defaultUsername = prefs[Keys.DEFAULT_USERNAME]?.ifBlank { "root" } ?: "root",
       customAiInstructions = prefs[Keys.CUSTOM_AI_INSTRUCTIONS] ?: "",
+      aiLanguageMode = languageMode,
     )
   }
 
@@ -69,5 +76,9 @@ class SettingsRepository(private val context: Context) {
 
   suspend fun setCustomAiInstructions(instructions: String) {
     context.settingsDataStore.edit { it[Keys.CUSTOM_AI_INSTRUCTIONS] = instructions.trim() }
+  }
+
+  suspend fun setAiLanguageMode(mode: AiLanguageMode) {
+    context.settingsDataStore.edit { it[Keys.AI_LANGUAGE_MODE] = mode.name }
   }
 }

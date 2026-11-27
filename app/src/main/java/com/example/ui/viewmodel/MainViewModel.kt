@@ -1,11 +1,13 @@
 package com.example.ui.viewmodel
 
+import android.graphics.Bitmap
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
 import com.example.AppContainer
 import com.example.ai.AiChatMessage
+import com.example.ai.AiLanguageMode
 import com.example.ai.AiSystemUiState
 import com.example.ai.BuildPlanUiState
 import com.example.ai.ConsoleErrorDetector
@@ -125,9 +127,14 @@ class MainViewModel(
     _includeAiTerminalContext.value = enabled
   }
 
-  fun sendAiPrompt(prompt: String) {
-    val cleanPrompt = prompt.trim()
-    if (cleanPrompt.isEmpty()) return
+  fun sendAiPrompt(prompt: String, imageBitmap: Bitmap? = null) {
+    val cleanPrompt = prompt.trim().ifEmpty {
+      if (imageBitmap != null) {
+        "Analyze this screenshot/photo, explain the problem clearly, and give step-by-step fix commands."
+      } else {
+        return
+      }
+    }
 
     aiStreamJob?.cancel()
     val priorHistory = _aiMessages.value
@@ -135,6 +142,7 @@ class MainViewModel(
       id = UUID.randomUUID().toString(),
       isUser = true,
       text = cleanPrompt,
+      imageBitmap = imageBitmap,
     )
     val assistantId = UUID.randomUUID().toString()
     val assistantPlaceholder = AiChatMessage(
@@ -160,6 +168,7 @@ class MainViewModel(
       null
     }
     val customInstructions = settings.value.customAiInstructions
+    val languageMode = settings.value.aiLanguageMode
 
     aiStreamJob = viewModelScope.launch {
       var latestText = ""
@@ -169,6 +178,8 @@ class MainViewModel(
           userPrompt = cleanPrompt,
           terminalContext = terminalContext,
           customInstructions = customInstructions,
+          languageMode = languageMode,
+          imageBitmap = imageBitmap,
         ).collect { partial ->
           latestText = partial
           _aiUiState.value = AiSystemUiState.Streaming(partial)
@@ -229,6 +240,7 @@ class MainViewModel(
       null
     }
     val customInstructions = settings.value.customAiInstructions
+    val languageMode = settings.value.aiLanguageMode
 
     buildPlanJob = viewModelScope.launch {
       try {
@@ -237,6 +249,7 @@ class MainViewModel(
           customInstructions = customInstructions,
           terminalContext = terminalContext,
           sshUsername = activeSess?.hostConfig?.username,
+          languageMode = languageMode,
         )
         _buildPlanState.value = BuildPlanUiState.Ready(plan)
       } catch (e: CancellationException) {
@@ -255,19 +268,22 @@ class MainViewModel(
     _buildPlanState.value = BuildPlanUiState.Idle
   }
 
-  fun diagnoseConsoleError(customHint: String? = null) {
+  fun diagnoseConsoleError(customHint: String? = null, imageBitmap: Bitmap? = null) {
     val activeSess = sessionManager.getSession(activeSessionId.value)
     val plainOutput = activeSess?.copyPlainOutput()?.takeIf { it.isNotBlank() }
-    if (plainOutput == null) {
-      _consoleFixState.value = ConsoleFixUiState.Error("No console output found in the active session yet.")
+    if (plainOutput == null && imageBitmap == null) {
+      _consoleFixState.value = ConsoleFixUiState.Error("No console output or error photo attached yet.")
       return
     }
-    val fullContext = GrassSshAiRepository.limitTerminalContext(
-      "Session: ${activeSess.hostConfig.username}@${activeSess.hostConfig.hostname}:${activeSess.hostConfig.port} (${activeSess.status.value.label})\n$plainOutput",
-    )
+    val fullContext = plainOutput?.let {
+      GrassSshAiRepository.limitTerminalContext(
+        "Session: ${activeSess.hostConfig.username}@${activeSess.hostConfig.hostname}:${activeSess.hostConfig.port} (${activeSess.status.value.label})\n$it",
+      )
+    }
     consoleFixJob?.cancel()
     _consoleFixState.value = ConsoleFixUiState.Diagnosing
     val customInstructions = settings.value.customAiInstructions
+    val languageMode = settings.value.aiLanguageMode
 
     consoleFixJob = viewModelScope.launch {
       try {
@@ -275,7 +291,9 @@ class MainViewModel(
           terminalContext = fullContext,
           customHint = customHint,
           customInstructions = customInstructions,
-          sshUsername = activeSess.hostConfig.username,
+          sshUsername = activeSess?.hostConfig?.username,
+          languageMode = languageMode,
+          imageBitmap = imageBitmap,
         )
         _consoleFixState.value = ConsoleFixUiState.Ready(fixPlan)
       } catch (e: CancellationException) {
@@ -522,6 +540,10 @@ class MainViewModel(
 
   fun setDefaultUsername(username: String) {
     viewModelScope.launch { settingsRepository.setDefaultUsername(username) }
+  }
+
+  fun setAiLanguageMode(mode: AiLanguageMode) {
+    viewModelScope.launch { settingsRepository.setAiLanguageMode(mode) }
   }
 
   companion object {
