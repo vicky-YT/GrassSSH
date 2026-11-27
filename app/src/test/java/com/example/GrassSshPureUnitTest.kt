@@ -79,4 +79,46 @@ class GrassSshPureUnitTest {
     assertEquals("line-31", limitedLines.first())
     assertEquals("line-80", limitedLines.last())
   }
+
+  @Test
+  fun `ai quota and rate limit errors normalize to compact daily limit notice`() {
+    val rawQuotaError = IllegalStateException(
+      """
+      You exceeded your current quota, please check your plan and billing details. For more information on this error, head to: https://aistudio.google.com/docs/rate-limits. To monitor your current usage, head to: https://ai.dev/rate-limit.
+      * Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash, description: Generate content requests per day limit exceeded on Free Tier. See https://aistudio.google.com/docs/rate-limits. Please retry in 16h43m13.913449759s.
+      """.trimIndent(),
+    )
+    assertTrue(GrassSshAiRepository.isQuotaOrRateLimitError(rawQuotaError))
+    assertEquals(
+      "Daily limit reached. Please try again tomorrow.",
+      GrassSshAiRepository.formatFailureMessage("Build plan failed", rawQuotaError),
+    )
+
+    val http429Error = IllegalStateException("HTTP 429: Resource has been exhausted")
+    assertEquals(
+      "Daily limit reached. Please try again tomorrow.",
+      GrassSshAiRepository.formatFailureMessage("GrassSSH AI System failed", http429Error),
+    )
+
+    val wrappedQuotaError = IllegalStateException(
+      "Build plan failed: request rejected",
+      RuntimeException("free_tier limit exceeded"),
+    )
+    assertEquals(
+      "Daily limit reached. Please try again tomorrow.",
+      GrassSshAiRepository.formatFailureMessage("Build plan failed", wrappedQuotaError),
+    )
+  }
+
+  @Test
+  fun `non-quota verbose errors strip urls and stay concise`() {
+    val verboseError = IllegalStateException(
+      "Backend temporarily unavailable.\nFor more information on this error, head to: https://firebase.google.com/docs/vertex-ai\n* metric detail line",
+    )
+    val formatted = GrassSshAiRepository.formatFailureMessage("Build plan failed", verboseError)
+    assertTrue(formatted.startsWith("Build plan failed:"))
+    assertTrue(!formatted.contains("https://"))
+    assertTrue(!formatted.contains("* metric detail line"))
+    assertTrue(formatted.length <= 170)
+  }
 }

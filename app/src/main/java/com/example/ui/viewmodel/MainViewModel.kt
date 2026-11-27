@@ -213,9 +213,15 @@ class MainViewModel(
             .map { item -> if (item.id == assistantId) item.copy(isStreaming = false) else item }
         }
         _aiUiState.value = AiSystemUiState.Error(
-          e.localizedMessage ?: "GrassSSH AI System encountered an error.",
+          GrassSshAiRepository.formatFailureMessage("GrassSSH AI System failed", e),
         )
       }
+    }
+  }
+
+  fun clearAiError() {
+    if (_aiUiState.value is AiSystemUiState.Error) {
+      _aiUiState.value = AiSystemUiState.Idle
     }
   }
 
@@ -257,7 +263,7 @@ class MainViewModel(
       } catch (e: Exception) {
         Log.e(AI_VM_TAG, "GrassSSH AI System build plan failed", e)
         _buildPlanState.value = BuildPlanUiState.Error(
-          e.localizedMessage ?: "Failed to generate build plan.",
+          GrassSshAiRepository.formatFailureMessage("Build plan failed", e),
         )
       }
     }
@@ -301,7 +307,7 @@ class MainViewModel(
       } catch (e: Exception) {
         Log.e(AI_VM_TAG, "GrassSSH AI console fix failed", e)
         _consoleFixState.value = ConsoleFixUiState.Error(
-          e.localizedMessage ?: "Failed to diagnose console error.",
+          GrassSshAiRepository.formatFailureMessage("Console fix failed", e),
         )
       }
     }

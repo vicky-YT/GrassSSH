@@ -23,8 +23,8 @@ import kotlinx.coroutines.withTimeout
 import org.json.JSONObject
 
 private const val TAG = "GrassSshAiSystem"
-private const val PRIMARY_MODEL = "gemini-3.8-flash"
-private const val FALLBACK_MODEL = "gemini-3.5-flash-lite"
+private const val PRIMARY_MODEL = "gemini-3.5-flash-lite"
+private const val FALLBACK_MODEL = "gemini-3.8-flash"
 private const val MODEL_REQUEST_TIMEOUT_MS = 120_000L
 private const val MAX_TERMINAL_CONTEXT_LINES = 50
 
@@ -282,10 +282,8 @@ class GrassSshAiRepository(
     }
   }
 
-  private fun formatFailureMessage(prefix: String, error: Throwable): String {
-    val raw = error.localizedMessage?.takeIf { it.isNotBlank() } ?: error::class.java.simpleName
-    return "$prefix: $raw"
-  }
+  private fun formatFailureMessage(prefix: String, error: Throwable): String =
+    Companion.formatFailureMessage(prefix, error)
 
   fun streamResponse(
     history: List<AiChatMessage>,
@@ -553,7 +551,83 @@ class GrassSshAiRepository(
   }
 
   companion object {
+    const val DAILY_LIMIT_REACHED_MESSAGE = "Daily limit reached. Please try again tomorrow."
+
     private val CODE_BLOCK_REGEX = Regex("```(?:bash|sh|shell|zsh)?\\s*\\n([\\s\\S]*?)```", RegexOption.IGNORE_CASE)
+    private val URL_REGEX = Regex("https?://\\S+", RegexOption.IGNORE_CASE)
+    private val BULLET_METRIC_LINE_REGEX = Regex("^\\s*\\*.*$")
+    private val WHITESPACE_REGEX = Regex("\\s+")
+
+    private fun collectErrorText(error: Throwable): String {
+      val visited = HashSet<Throwable>()
+      val sb = StringBuilder()
+      var current: Throwable? = error
+      var depth = 0
+      while (current != null && depth < 5 && visited.add(current)) {
+        val msg = current.localizedMessage ?: current.message
+        if (!msg.isNullOrBlank()) {
+          if (sb.isNotEmpty()) sb.append(' ')
+          sb.append(msg)
+        }
+        current = current.cause
+        depth++
+      }
+      return sb.toString()
+    }
+
+    fun isQuotaOrRateLimitError(error: Throwable): Boolean {
+      val lower = collectErrorText(error).lowercase()
+      return lower.contains("exceeded your current quota") ||
+        lower.contains("quota exceeded") ||
+        lower.contains("quota") ||
+        lower.contains("rate-limit") ||
+        lower.contains("rate limit") ||
+        lower.contains("free_tier") ||
+        lower.contains("generate_content_free_tier") ||
+        lower.contains("resource exhausted") ||
+        lower.contains("resource_exhausted") ||
+        lower.contains("too many requests") ||
+        lower.contains("daily limit") ||
+        lower.contains("429")
+    }
+
+    fun formatFailureMessage(prefix: String, error: Throwable): String {
+      if (error is TimeoutCancellationException) {
+        return "$prefix: Request timed out. Please try again."
+      }
+      if (isQuotaOrRateLimitError(error)) {
+        return DAILY_LIMIT_REACHED_MESSAGE
+      }
+      val raw = (error.localizedMessage ?: error.message)
+        ?.takeIf { it.isNotBlank() }
+        ?: error::class.java.simpleName
+
+      val filteredLines = raw.lines()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() && !BULLET_METRIC_LINE_REGEX.matches(it) }
+        .joinToString(" ")
+
+      var cleaned = URL_REGEX.replace(filteredLines, "")
+        .replace(Regex("For more information on this error, head to:?\\s*\\.?", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("To monitor your current usage, head to:?\\s*\\.?", RegexOption.IGNORE_CASE), "")
+        .replace(Regex("\\bSee\\s*\\.", RegexOption.IGNORE_CASE), "")
+        .replace(WHITESPACE_REGEX, " ")
+        .trim()
+        .trimEnd(',', ';', ':')
+
+      if (cleaned.isBlank()) {
+        cleaned = error::class.java.simpleName
+      }
+      if (cleaned.length > 150) {
+        cleaned = cleaned.take(147).trimEnd() + "..."
+      }
+      val normalizedPrefix = prefix.trim().trimEnd(':')
+      return if (cleaned.startsWith("$normalizedPrefix:", ignoreCase = true)) {
+        cleaned
+      } else {
+        "$normalizedPrefix: $cleaned"
+      }
+    }
 
     fun limitTerminalContext(
       terminalContext: String,

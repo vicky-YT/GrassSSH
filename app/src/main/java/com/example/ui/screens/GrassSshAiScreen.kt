@@ -53,6 +53,7 @@ import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.RocketLaunch
+import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Terminal
 import androidx.compose.material.icons.filled.Translate
 import androidx.compose.material.icons.filled.Tune
@@ -110,6 +111,7 @@ import com.example.ai.BuildPlanUiState
 import com.example.ai.ConsoleFixPlan
 import com.example.ai.ConsoleFixUiState
 import com.example.ai.GeneratedBuildPlan
+import com.example.ai.GrassSshAiRepository
 import com.example.ui.theme.AmberWarning
 import com.example.ui.theme.CoralError
 import com.example.ui.theme.EmeraldPhosphor
@@ -150,6 +152,7 @@ fun GrassSshAiScreen(
   onToggleIncludeContext: (Boolean) -> Unit,
   onSelectLanguageMode: (AiLanguageMode) -> Unit,
   onSendPrompt: (String, Bitmap?) -> Unit,
+  onDismissAiError: () -> Unit = {},
   onClearChat: () -> Unit,
   onGenerateBuildPlan: (String) -> Unit,
   onClearBuildPlan: () -> Unit,
@@ -189,6 +192,7 @@ fun GrassSshAiScreen(
         onToggleIncludeContext = onToggleIncludeContext,
         onSelectLanguageMode = onSelectLanguageMode,
         onSendPrompt = onSendPrompt,
+        onDismissAiError = onDismissAiError,
         onClearChat = onClearChat,
         onGenerateBuildPlan = onGenerateBuildPlan,
         onClearBuildPlan = onClearBuildPlan,
@@ -224,6 +228,7 @@ fun GrassSshAiPanel(
   onToggleIncludeContext: (Boolean) -> Unit,
   onSelectLanguageMode: (AiLanguageMode) -> Unit,
   onSendPrompt: (String, Bitmap?) -> Unit,
+  onDismissAiError: () -> Unit = {},
   onClearChat: () -> Unit,
   onGenerateBuildPlan: (String) -> Unit,
   onClearBuildPlan: () -> Unit,
@@ -638,25 +643,11 @@ fun GrassSshAiPanel(
           is ConsoleFixUiState.Idle -> Unit
           is ConsoleFixUiState.Diagnosing -> Unit
           is ConsoleFixUiState.Error -> {
-            Surface(
-              color = CoralError.copy(alpha = 0.14f),
-              shape = MaterialTheme.shapes.small,
-              border = androidx.compose.foundation.BorderStroke(1.dp, CoralError.copy(alpha = 0.5f)),
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = CoralError)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                  text = consoleFixState.message,
-                  style = MaterialTheme.typography.bodySmall,
-                  color = CoralError,
-                )
-              }
-            }
+            CompactAiNoticeBanner(
+              message = consoleFixState.message,
+              onDismiss = onClearConsoleFix,
+              modifier = Modifier.testTag("fix_error_banner"),
+            )
           }
           is ConsoleFixUiState.Ready -> {
             val fix = consoleFixState.fixPlan
@@ -775,25 +766,11 @@ fun GrassSshAiPanel(
           }
           is BuildPlanUiState.Generating -> Unit
           is BuildPlanUiState.Error -> {
-            Surface(
-              color = CoralError.copy(alpha = 0.14f),
-              shape = MaterialTheme.shapes.small,
-              border = androidx.compose.foundation.BorderStroke(1.dp, CoralError.copy(alpha = 0.5f)),
-              modifier = Modifier.fillMaxWidth(),
-            ) {
-              Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = CoralError)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                  text = buildPlanState.message,
-                  style = MaterialTheme.typography.bodySmall,
-                  color = CoralError,
-                )
-              }
-            }
+            CompactAiNoticeBanner(
+              message = buildPlanState.message,
+              onDismiss = onClearBuildPlan,
+              modifier = Modifier.testTag("build_error_banner"),
+            )
           }
           is BuildPlanUiState.Ready -> {
             val plan = buildPlanState.plan
@@ -917,28 +894,11 @@ fun GrassSshAiPanel(
 
         if (aiUiState is AiSystemUiState.Error) {
           item(key = "ai_error_banner") {
-            Surface(
-              color = CoralError.copy(alpha = 0.14f),
-              shape = MaterialTheme.shapes.small,
-              border = androidx.compose.foundation.BorderStroke(1.dp, CoralError.copy(alpha = 0.5f)),
-              modifier = Modifier
-                .fillMaxWidth()
-                .testTag("ai_error_banner"),
-            ) {
-              Row(
-                modifier = Modifier.padding(12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-              ) {
-                Icon(Icons.Default.ErrorOutline, contentDescription = null, tint = CoralError)
-                Spacer(modifier = Modifier.width(10.dp))
-                Text(
-                  text = aiUiState.message,
-                  style = MaterialTheme.typography.bodySmall,
-                  color = CoralError,
-                  modifier = Modifier.weight(1f),
-                )
-              }
-            }
+            CompactAiNoticeBanner(
+              message = aiUiState.message,
+              onDismiss = onDismissAiError,
+              modifier = Modifier.testTag("ai_error_banner"),
+            )
           }
         }
       }
@@ -1702,6 +1662,61 @@ private fun AttachedImagePreviewCard(
           imageVector = Icons.Default.Close,
           contentDescription = "Remove attached photo",
           tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+      }
+    }
+  }
+}
+
+@Composable
+private fun CompactAiNoticeBanner(
+  message: String,
+  onDismiss: () -> Unit,
+  modifier: Modifier = Modifier,
+) {
+  val isLimitNotice = message == GrassSshAiRepository.DAILY_LIMIT_REACHED_MESSAGE
+  val accentColor = if (isLimitNotice) AmberWarning else CoralError
+  val icon = if (isLimitNotice) Icons.Default.Schedule else Icons.Default.ErrorOutline
+  val iconDescription = if (isLimitNotice) "Daily limit notice" else "Error notice"
+
+  Surface(
+    color = accentColor.copy(alpha = 0.12f),
+    shape = MaterialTheme.shapes.small,
+    border = androidx.compose.foundation.BorderStroke(1.dp, accentColor.copy(alpha = 0.45f)),
+    modifier = modifier.fillMaxWidth(),
+  ) {
+    Row(
+      modifier = Modifier
+        .fillMaxWidth()
+        .padding(start = 12.dp, top = 4.dp, bottom = 4.dp, end = 4.dp),
+      verticalAlignment = Alignment.CenterVertically,
+    ) {
+      Icon(
+        imageVector = icon,
+        contentDescription = iconDescription,
+        tint = accentColor,
+        modifier = Modifier.size(18.dp),
+      )
+      Spacer(modifier = Modifier.width(10.dp))
+      Text(
+        text = message,
+        style = MaterialTheme.typography.bodySmall,
+        color = accentColor,
+        maxLines = 2,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.weight(1f),
+      )
+      IconButton(
+        onClick = onDismiss,
+        modifier = Modifier
+          .size(48.dp)
+          .testTag("dismiss_ai_notice_button"),
+      ) {
+        Icon(
+          imageVector = Icons.Default.Close,
+          contentDescription = "Dismiss notice",
+          tint = accentColor,
+          modifier = Modifier.size(18.dp),
         )
       }
     }
